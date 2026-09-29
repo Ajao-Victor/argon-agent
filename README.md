@@ -2,11 +2,17 @@
 
 Hourly inference that decides when Uniswap LP should be **in the pool** and when it should sit in **cash**.
 
-Argon is a dual-chain LP vault. A user deposits liquidity once. Every hour an agent publishes a 1-hour price forecast, then mints or burns Uniswap positions on the user’s behalf. The user never clicks in and out of ranges.
+Argon is a dual-chain LP vault for [Arbitrum Open House Singapore: Online Buildathon](https://www.hackquest.io/hackathons/Arbitrum-Open-House-Singapore-Online-Buildathon). A user deposits liquidity once. Every hour a hosted model publishes an 8h-ahead ETH % change. That number, not a spot stop, decides when Uniswap LP is minted or burned. The user never clicks in and out of ranges.
 
 **Chains:** Arbitrum One (`42161`) and Robinhood Chain (`4663`).  
 **DEX:** Uniswap v3 and v4.  
-**Volatile legs the agent forecasts:** `ETH/USD` and `LINK/USD` (LINK/ETH is derived).
+**Forecast now:** ETH % change at 1h, 2h, and 8h, submitted every hour. LINK later.
+
+Module graph, hourly loop, and decision policy are in the [Argon architecture canvas](/Users/wang/.cursor/projects/Users-wang-Untitled/canvases/argon-architecture.canvas.tsx) — open it beside the chat.
+
+Web-dev spec (site × agent × Arbitrum): [docs/web-architecture.md](docs/web-architecture.md).  
+Heroku deploy + where the 8h/9-tick window is stored: [docs/heroku-deploy.md](docs/heroku-deploy.md).  
+Smart contracts (what we deploy on Arb + Robinhood): [docs/contracts.md](docs/contracts.md).
 
 ---
 
@@ -19,12 +25,12 @@ Manual LPs cannot sit on the books every hour. Existing automators rebalance ran
 ## Solution
 
 1. User deposits into a per-chain vault (not directly into Uniswap).
-2. Off-chain agent infers 1H-ahead prices for ETH and LINK and commits that inference.
-3. A policy engine maps forecasts onto one action per pool: `ENTER`, `HOLD`, or `EXIT`.
+2. Off-chain model infers ETH % change at **1h, 2h, and 8h**, every hour, and commits that inference.
+3. Policy: **ENTER** only if all three are inside their bands; **EXIT** if 1h or 2h is outside.
 4. A keeper executes mint / increase / decrease / collect / burn through the vault.
-5. Idle liquidity stays in the vault as the underlying tokens, ready for the next green hour.
+5. Idle liquidity stays in the vault until the next in-gate forecast.
 
-Worked example: agent predicts ETH → $2,300 in one hour. Argon exits `WETH/USDC` and `WETH/USDG`. Next hour, if the ETH forecast is green, it opens those LP positions again with the same deposited liquidity. If LINK is still green while ETH is red, `LINK/USDC` can stay in the pool — the product is not ETH-only.
+Worked example: `pred_1h = −0.4%`, `pred_2h = −1.1%`, `pred_8h = −1.5%` → all inside → **ENTER**. Next hour `pred_2h = −2.8%` → **EXIT** even if 1h is still −0.3%. First LP decision is at hour 8 (warmup).
 
 ---
 
@@ -80,13 +86,13 @@ Chainlink ───┴► Inference agent ──► Policy engine ──► Keep
 
 | Module | Lives | Job |
 |--------|-------|-----|
-| **dApp** | Off-chain | Connect wallet, deposit / withdraw, show the latest 1H forecast, per-pool status (`in range` / `idle in vault`), and the last keeper tx. |
+| **dApp** | Off-chain | Connect wallet, deposit / withdraw, show 1h / 2h / 8h ETH %, per-pool status, last keeper tx. |
 | **Vault (Arbitrum)** | Solidity, chain 42161 | Escrow WETH, USDC, LINK. Only the keeper role may mint or burn Uniswap positions. Users can always emergency-withdraw idle balances. |
 | **Vault (Robinhood)** | Solidity, chain 4663 | Same pattern for WETH and USDG. Separate contract so a Robinhood outage cannot freeze Arbitrum funds. |
 | **Uniswap adapters** | On-chain | v3 `NonfungiblePositionManager` for pools 1, 2, 4. v4 `PoolManager` / position manager for pool 3. |
 | **Feature pipeline** | Off-chain | Hourly OHLCV, realized vol, pool tick / inventory, Chainlink spot. Builds the model input vector. |
-| **Inference agent** | Off-chain | Every hour, emit `{ ethUsd1h, linkUsd1h, linkEth1h, submittedAt }`. Commit a hash on-chain so judges can audit that the same number drove the tx. |
-| **Policy engine** | Off-chain | Map forecasts onto `ENTER` / `HOLD` / `EXIT` per pool. Apply deadbands, gas vs expected IL, sequencer-uptime, and cooldown. |
+| **Hosted model** | Heroku | Load pickle/h5. Every hour emit `{ ethPct1h, ethPct2h, ethPct8h, hourId }`. Commit a hash on-chain. |
+| **Policy engine** | Off-chain | Dual-horizon gate below. Sequencer-uptime and cooldown. |
 | **Keeper** | Off-chain signer | Submit the txs. Never a `ONLYOWNER` rug path: it can only call vault `rebalance()` with slippage and range bounds already set in the contract. |
 | **Inference registry** | On-chain | `submit(bytes32 forecastHash, uint64 hourId)` so the hourly call is public even if the model weights stay off-chain. |
 | **Oracles** | Chainlink | ETH/USD and LINK/USD on both chains, plus the L2 sequencer uptime feed. Vaults refuse to rebalance if the sequencer is down or the feed is stale. |
@@ -104,9 +110,9 @@ Cadence is one inference per hour, on the hour (UTC).
 | Minute | Step | Module |
 |--------|------|--------|
 | `:00` | Pull candles, Chainlink spot, current ticks, vault balances | Feature pipeline |
-| `:01` | Infer 1H-ahead ETH and LINK; derive LINK/ETH | Inference agent |
-| `:01` | `submit(forecastHash, hourId)` on both chains | Inference registry |
-| `:02` | Score each of the four pools → `ENTER` / `HOLD` / `EXIT` | Policy engine |
+| `:01` | Load pickle/h5, infer ETH % at 1h, 2h, and 8h | Hosted model (Heroku) |
+| `:01` | `submit(forecastHash, hourId, …)` on both chains | Inference registry |
+| `:02` | Dual-horizon gate → EXIT / ENTER / HOLD | Policy engine |
 | `:03–:08` | Keeper sends `rebalance(poolId, action, range, minOut)` | Vaults → Uniswap |
 | rest of hour | Positions sit. dApp polls status. No further txs unless emergency | — |
 
@@ -118,19 +124,29 @@ On `HOLD`: collect fees only if gas-positive; do not touch the range.
 
 ## Decision policy
 
-The agent forecasts **tickers**, not pools. Policy then fans those tickers onto the four books.
+The **model** times exit and entry. There is no spot stop. Gates apply to **predicted** ETH % change from the latest hourly infer.
 
-| 1H forecast | WETH/USDC | LINK/WETH | LINK/USDC | WETH/USDG |
-|-------------|-----------|-----------|-----------|-----------|
-| ETH red, LINK green | EXIT | EXIT if ratio breaks | HOLD / ENTER | EXIT |
-| LINK red, ETH green | HOLD | EXIT | EXIT | HOLD |
-| Both red | EXIT | EXIT | EXIT | EXIT |
-| Both green | ENTER | ENTER | ENTER | ENTER |
-| Move inside deadband | HOLD | HOLD | HOLD | HOLD |
+Vault params (bps):
 
-**ETH → $2,300 example:** pools 1 and 4 exit. Pool 3 (`LINK/USDC`) stays if LINK is green. Pool 2 (`LINK/WETH`) exits if the ETH leg would dominate IL. Next hour, if ETH prints green, pools 1 and 4 re-enter with the user’s original deposit.
+| Horizon | Param | Band | Role |
+|---------|-------|------|------|
+| 1h | `gate1hBps = 100` | **±1.0%** | Near path. Tight, or it never fires. |
+| 2h | `gate2hBps = 250` | **±2.5%** | Main near-term size gate. |
+| 8h | `gate8hBps = 200` | **±2.0%** | ENTER only. Do not open into an 8h dump that is still quiet on 1h/2h. |
 
-Deadband: do not exit for a predicted move smaller than the current range width plus estimated gas. Cooldown: at most one `EXIT→ENTER` round-trip per pool per two hours unless the forecast flips hard.
+```
+EXIT  if  |pred_1h| ≥ 1.0%  OR  |pred_2h| ≥ 2.5%
+ENTER if  idle AND |pred_1h| < 1.0% AND |pred_2h| < 2.5% AND |pred_8h| < 2.0%
+HOLD  if  already in AND not EXIT
+```
+
+Do not wait for *both* 1h and 2h to be large before exiting. Do not open unless **all three** are inside.
+
+The 8h head already exists. **1h and 2h must be real model heads** (same features, different targets). Do not split `pred_8h / 8`.
+
+Hours 0–7: store forecasts only (warmup). Hour 8: first enter/exit. LINK later; pools 2 and 3 stay off this ETH gate.
+
+Cooldown: at most one `EXIT→ENTER` round-trip per pool per two hours unless EXIT fires again.
 
 ---
 
@@ -152,7 +168,7 @@ Deadband: do not exit for a predicted move smaller than the current range width 
 | Contracts | Solidity 0.8.x, Foundry. Stylus later if we need a cheaper tick-math helper. |
 | Uniswap | v3 NPM on Arb + Robinhood; v4 on Arb for `LINK/USDC`. |
 | Oracles | Chainlink Data Feeds + L2 sequencer feed. |
-| Agent | Python (features + model) or TypeScript if we keep the first model as gradient boosting on 1H candles. |
+| Model | Pickle or h5 on Heroku. Hourly inference only. |
 | Keeper | viem / ethers with a dedicated hot wallet per chain, funded in ETH for gas. |
 | dApp | Next.js, wagmi, permissionless wallet connect for 42161 and 4663. |
 | RPCs | `https://arb1.arbitrum.io/rpc` and `https://rpc.mainnet.chain.robinhood.com`. |
@@ -162,26 +178,40 @@ Deadband: do not exit for a predicted move smaller than the current range width 
 ## Planned repo layout
 
 ```
-contracts/          Foundry project, shared interfaces
-  src/arbitrum/     Vault + v3/v4 adapters + inference registry
-  src/robinhood/    Vault + v3 adapter + inference registry
-  test/
-agent/              Feature pipeline, model, policy, keeper
-apps/web/           Deposit, forecasts, position status
+contracts/          Foundry project (live on Arb + RH)
+agent/              Heroku: pickle infer, Postgres, dual-horizon keeper
+apps/web/lib/       Vercel REST + wagmi ABIs (pages still to scaffold)
 ```
+
+---
+
+## Hackathon fit
+
+| Criterion | How Argon hits it |
+|-----------|-------------------|
+| Smart contract quality | Thin vaults, no custodian key, Uniswap adapters isolated, oracle + sequencer guards, Foundry tests on mint/burn/emergency withdraw. |
+| Product-market fit | LPs already chase these four books; they lack an hourly “get out before the dump” switch. |
+| Innovation | Inference-gated LP, not another range rebalancer. LINK is a second market so the agent is not an ETH bot with extra steps. |
+| Real problem | Impermanent loss on concentrated ETH and LINK ranges is the actual PnL leak. |
+| Prize lanes | Arbitrum One for pools 1–3; Robinhood Chain for pool 4. One product, both reserved tracks. |
 
 ---
 
 ## Demo script (target)
 
 1. Deposit USDC + WETH on Arbitrum; deposit WETH + USDG on Robinhood.
-2. Agent submits a green 1H forecast → four (or the funded) pools show `IN_POOL`.
-3. Inject a bearish ETH inference (ETH → $2,300) → pools 1 and 4 go `IDLE`; LINK/USDC can stay.
-4. Next hour, green ETH → those vault balances mint LP again.
+2. After warmup, an in-gate forecast (1h < 1% and 2h < 2.5% and 8h < 2%) → funded ETH-stable pools show `IN_POOL`.
+3. Next hour `pred_2h = −2.8%` → pools 1 and 4 go `IDLE` even if 1h is small.
+4. A later hour all three back inside → those vault balances mint LP again.
 5. Show the on-chain `forecastHash` matching the UI number.
 
 ---
 
 ## Status
 
-Write-up and architecture locked to the four pools above. Implementation has not started.
+Contracts are live on Arbitrum One (`42161`) and Robinhood Chain (`4663`). Addresses: [contracts/deployments.md](contracts/deployments.md).
+
+Agent (Heroku infer + Postgres + keeper): [`agent/`](agent/README.md).  
+Frontend glue for Vercel: [`apps/web/lib/`](apps/web/lib/agent.ts).
+
+Still to build: Next.js pages (deposit / withdraw / forecast UI) on Vercel, pointed at the Heroku agent URL.

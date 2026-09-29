@@ -1,0 +1,22 @@
+{
+  "name": "argon-agent",
+  "description": "Hourly ETH infer + dual-horizon keeper for Argon vaults",
+  "repository": "https://github.com/Wangsamuels/argon",
+  "stack": "heroku-24",
+  "formation": {
+    "web": { "quantity": 1, "size": "eco" },
+    "clock": { "quantity": 1, "size": "eco" }
+  },
+  "addons": ["heroku-postgresql:essential-0"],
+  "env": {
+    "DRY_RUN": { "value": "true" },
+    "MODEL_ID": { "value": "eth-1-2-8h-v1" },
+    "GATE_1H_BPS": { "value": "100" },
+    "GATE_2H_BPS": { "value": "250" },
+    "GATE_8H_BPS": { "value": "200" }
+  },
+  "buildpacks": [
+    { "url": "https://github.com/heroku/heroku-buildpack-apt" },
+    { "url": "heroku/python" }
+  ]
+}

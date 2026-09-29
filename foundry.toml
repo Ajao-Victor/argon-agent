@@ -1,0 +1,19 @@
+[profile.default]
+src = "contracts/src"
+test = "contracts/test"
+script = "contracts/script"
+out = "contracts/out"
+libs = ["contracts/lib"]
+cache_path = "contracts/cache"
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+evm_version = "cancun"
+
+[rpc_endpoints]
+arbitrum = "https://arb1.arbitrum.io/rpc"
+robinhood = "https://rpc.mainnet.chain.robinhood.com"
+
+[fmt]
+ignore = ["contracts/lib/**"]

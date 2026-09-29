@@ -1,0 +1,14 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+.DS_Store
+**/__pycache__/
+*.pyc
+agent/.venv/
+agent/venv/
+agent/forecasts.db
+agent/.pytest_cache/
+*.pkl
