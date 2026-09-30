@@ -19,6 +19,7 @@ from argon_agent.config import (
     frontend_origins,
 )
 from argon_agent.db import Store
+from argon_agent.portfolio import snapshot
 from argon_agent.serialize import current_hour_id, row_to_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -62,6 +63,8 @@ def root():
         "status": "/status",
         "latestForecast": "/forecasts/latest",
         "forecasts": "/forecasts?limit=24",
+        "vault": "/vault",
+        "portfolio": "/portfolio/0xYourAddress",
     }
     if payload.get("lastHourId") is None:
         payload["hint"] = (
@@ -121,6 +124,25 @@ def latest_forecast():
 def list_forecasts(limit: int = Query(24, ge=1, le=168)):
     items = [row_to_api(r, warmup_complete=_warmup()) for r in store.list_recent(limit)]
     return {"items": items}
+
+
+@app.get("/vault")
+def vault_snapshot():
+    """TVL and pool status on both chains. No wallet required."""
+    return snapshot(None)
+
+
+@app.get("/portfolio/{address}")
+def user_portfolio(address: str):
+    """Per-wallet vault equity in USD. Poll every 10s for near-real-time UI."""
+    from web3 import Web3
+
+    if not Web3.is_address(address):
+        raise HTTPException(status_code=400, detail="invalid address")
+    payload = snapshot(address)
+    latest = store.latest()
+    payload["forecast"] = row_to_api(latest, warmup_complete=_warmup()) if latest else None
+    return payload
 
 
 @app.get("/forecasts/{hour_id}")

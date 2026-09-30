@@ -99,6 +99,64 @@ export const vaultAbi = [
     inputs: [],
     outputs: [{ type: "bool" }],
   },
+  {
+    type: "function",
+    name: "totalShares",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "weth",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "stable",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "oracle",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+] as const;
+
+export const oracleAbi = [
+  {
+    type: "function",
+    name: "ethUsd8",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+export const adapterAbi = [
+  {
+    type: "function",
+    name: "inPosition",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "amounts",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "amountA", type: "uint256" },
+      { name: "amountB", type: "uint256" },
+    ],
+  },
 ] as const;
 
 export const erc20Abi = [

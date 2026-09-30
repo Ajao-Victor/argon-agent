@@ -113,6 +113,71 @@ VAULT_ABI = [
         "stateMutability": "view",
         "type": "function",
     },
+    {
+        "inputs": [],
+        "name": "totalShares",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "user", "type": "address"}],
+        "name": "shareBalance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "user", "type": "address"},
+            {"name": "token", "type": "address"},
+        ],
+        "name": "idleBalance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "weth",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "stable",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "stableDecimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "oracle",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "poolId", "type": "uint8"}],
+        "name": "pools",
+        "outputs": [
+            {"name": "adapter", "type": "address"},
+            {"name": "gated", "type": "bool"},
+            {"name": "exists", "type": "bool"},
+            {"name": "lastExitHourId", "type": "uint64"},
+            {"name": "lastRebalanceHourId", "type": "uint64"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]
 
 ADAPTER_ABI = [
@@ -137,6 +202,36 @@ ADAPTER_ABI = [
         "stateMutability": "view",
         "type": "function",
     },
+    {
+        "inputs": [],
+        "name": "amounts",
+        "outputs": [
+            {"name": "amountA", "type": "uint256"},
+            {"name": "amountB", "type": "uint256"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+ERC20_ABI = [
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
+
+ORACLE_ABI = [
+    {
+        "inputs": [],
+        "name": "ethUsd8",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
 ]
 
 NPM_ABI = [

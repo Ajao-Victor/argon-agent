@@ -45,6 +45,50 @@ export type AgentStatus = {
   modelLoaded: boolean;
 };
 
+export type ChainPortfolio = {
+  name: string;
+  chainId: number;
+  vault: string;
+  poolId: number;
+  pair: string;
+  inPool: boolean;
+  ethUsd: number;
+  totalShares: string;
+  tvlUsd: number;
+  shares: string;
+  shareUsd: number;
+  idleWeth: string;
+  idleStable: string;
+  idleWethFormatted: number;
+  idleStableFormatted: number;
+  walletWeth: string;
+  walletStable: string;
+  walletWethFormatted: number;
+  walletStableFormatted: number;
+  stableSymbol: string;
+  stableDecimals: number;
+  error?: string;
+};
+
+export type Portfolio = {
+  address: string;
+  updatedAt: string;
+  pollSeconds: number;
+  totalUsd: number;
+  chains: {
+    arbitrum?: ChainPortfolio;
+    robinhood?: ChainPortfolio;
+  };
+  forecast: Forecast | null;
+};
+
+/** Polling cadence for a live dashboard. */
+export const POLL_MS = {
+  portfolio: 10_000,
+  forecast: 30_000,
+  status: 30_000,
+} as const;
+
 const BASE = process.env.NEXT_PUBLIC_AGENT_URL ?? "";
 
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -54,7 +98,7 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
-    next: { revalidate: 30 },
+    next: init?.next ?? { revalidate: 30 },
   });
   if (!res.ok) {
     throw new Error(`agent ${res.status} ${path}`);
@@ -80,4 +124,16 @@ export function getAgentStatus() {
 
 export function getHealth() {
   return getJson<{ ok: boolean; modelLoaded: boolean }>("/health");
+}
+
+export function getVault() {
+  return getJson<Omit<Portfolio, "address" | "forecast">>("/vault");
+}
+
+/** Near-real-time user equity. Call on an interval of POLL_MS.portfolio. */
+export function getPortfolio(address: string) {
+  return getJson<Portfolio>(`/portfolio/${address}`, {
+    cache: "no-store",
+    next: { revalidate: 0 },
+  });
 }
