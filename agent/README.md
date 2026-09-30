@@ -130,33 +130,38 @@ Scaffold Next.js + wagmi against those files. Users only sign `approve` + `depos
 
 ## Host on Heroku
 
-Heroku needs this **folder as git root** (Procfile at the top of the slug). From the Argon monorepo:
+The GitHub repo is a monorepo. Root `Procfile` / `requirements.txt` point at `agent/`, so **Deploy → GitHub → Deploy Branch** works. Do not use Heroku Git `git push heroku` unless you also push those root files.
+
+### Dashboard (GitHub already connected)
+
+1. **Deploy branch** — yellow banner: switch the deploy branch from `master` to `main`, then **Manual deploy → main → Deploy Branch**.
+2. **Buildpacks** (Settings → Buildpacks), in this order:
+   1. `https://github.com/heroku/heroku-buildpack-apt`
+   2. `heroku/python`
+3. **Postgres** — Resources → Add-ons → Heroku Postgres (Essential-0 is enough).
+4. **Config vars** — Settings → Config Vars (never commit these):
+
+```
+TIINGO_API_KEY
+KEEPER_PRIVATE_KEY
+DRY_RUN=true
+MODEL_ID=eth-1-2-8h-v1
+MODEL_8H_URL          # HTTPS file for eth_8h_lgbm.pkl, or git-add the pickle
+FRONTEND_ORIGIN       # your Vercel URL; preview *.vercel.app is already allowed
+```
+
+5. **Clock dyno** — Resources: turn **web** and **clock** both on (`clock=1`). Web alone will not run hourly infer.
+6. Open the app: `https://argon-XXXX.herokuapp.com/health`
+
+### CLI equivalent
 
 ```bash
-# one-time
-brew install heroku/brew/heroku   # or https://devcenter.heroku.com/articles/heroku-cli
 heroku login
-
-heroku create argon-agent
+heroku git:remote -a argon
 heroku buildpacks:add https://github.com/heroku/heroku-buildpack-apt
 heroku buildpacks:add heroku/python
 heroku addons:create heroku-postgresql:essential-0
-
-heroku config:set \
-  TIINGO_API_KEY=your_tiingo_token \
-  KEEPER_PRIVATE_KEY=0x... \
-  FRONTEND_ORIGIN=https://your-app.vercel.app \
-  DRY_RUN=true \
-  MODEL_ID=eth-1-2-8h-v1 \
-  MODEL_8H_URL=https://…/eth_8h_lgbm.pkl
-
-# deploy only agent/
-git subtree split --prefix=agent -b heroku-agent
-git push heroku heroku-agent:main
-
-# or, if you prefer a dedicated clone:
-# cd agent && git init && git add . && git commit -m "agent" && heroku git:remote -a argon-agent && git push heroku main
-
+heroku config:set DRY_RUN=true MODEL_ID=eth-1-2-8h-v1
 heroku ps:scale web=1 clock=1
 heroku logs --tail
 ```
