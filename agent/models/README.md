@@ -1,2 +1,2 @@
-# Copy your Colab pickle here as eth_8h_lgbm.pkl (gitignored).
-# Or set MODEL_8H_URL to a downloadable file and the agent fetches it on boot.
+# Trained 8h LightGBM pickle used by the Heroku clock.
+# eth_8h_lgbm.pkl is committed. Optional 1h/2h pickles stay gitignored.

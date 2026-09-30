@@ -12,3 +12,4 @@ agent/venv/
 agent/forecasts.db
 agent/.pytest_cache/
 *.pkl
+!agent/models/eth_8h_lgbm.pkl
