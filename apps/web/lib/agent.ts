@@ -87,6 +87,7 @@ export const POLL_MS = {
   portfolio: 10_000,
   forecast: 30_000,
   status: 30_000,
+  pools: 60_000,
 } as const;
 
 const BASE = process.env.NEXT_PUBLIC_AGENT_URL ?? "";
@@ -136,4 +137,40 @@ export function getPortfolio(address: string) {
     cache: "no-store",
     next: { revalidate: 0 },
   });
+}
+
+export type LpPool = {
+  id: "arbitrum" | "robinhood";
+  chainId: number;
+  poolId: number;
+  pair: string;
+  feePercent: number;
+  uniswapFee: number;
+  vault: string;
+  pool: string;
+  weth: string;
+  stable: string;
+  stableSymbol: string;
+  inPool: boolean;
+  poolTvlUsd: number;
+  ethUsd: number;
+  selectable: boolean;
+  depositHint: string;
+  aprPct: number | null;
+  aprBasePct: number | null;
+  aprSource: "defillama" | "unavailable";
+  llamaTvlUsd: number | null;
+  volumeUsd1d: number | null;
+  error?: string;
+};
+
+export type PoolsResponse = {
+  updatedAt: string;
+  pollSeconds: number;
+  selectOneChain: true;
+  pools: LpPool[];
+};
+
+export function getPools() {
+  return getJson<PoolsResponse>("/pools", { next: { revalidate: 60 } });
 }

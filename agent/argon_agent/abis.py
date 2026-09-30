@@ -280,5 +280,33 @@ POOL_ABI = [
         ],
         "stateMutability": "view",
         "type": "function",
-    }
+    },
+    {
+        "inputs": [],
+        "name": "token0",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "token1",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "fee",
+        "outputs": [{"name": "", "type": "uint24"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "liquidity",
+        "outputs": [{"name": "", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]

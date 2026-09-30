@@ -19,6 +19,7 @@ On-chain shares are the source of truth. The agent reads both vaults and returns
 | **10s** | `GET /portfolio/{wallet}` | Hero: `totalUsd`. Per chain: `shareUsd`, `inPool`, idle WETH/stable |
 | **30s** | `GET /forecasts/latest` | 1h / 2h / 8h chips, `action` |
 | **30s** | `GET /status` | warmup countdown |
+| **60s** | `GET /pools` | Arb vs RH ETH LP **APR + TVL** before stake |
 | on tx receipt | refetch portfolio | after deposit / withdraw |
 
 Copy-paste hook: `lib/usePortfolio.ts`.
@@ -65,6 +66,48 @@ Until a user deposits, `totalUsd` is `0`. That is correct.
 
 LP value uses the adapter’s stored principal (same as the vault), not a Uniswap slot0 mark. It updates on the next keeper ENTER/EXIT.
 
+## Pick a pool before deposit
+
+There is **no** cross-chain stake. The user chooses Arbitrum **or** Robinhood, switches the wallet to that chain, then deposits into that vault.
+
+`GET /pools` (poll 60s):
+
+```json
+{
+  "selectOneChain": true,
+  "pools": [
+    {
+      "id": "arbitrum",
+      "chainId": 42161,
+      "poolId": 1,
+      "pair": "WETH/USDC",
+      "feePercent": 0.05,
+      "aprPct": 12.4,
+      "aprSource": "defillama",
+      "poolTvlUsd": 45000000,
+      "inPool": false,
+      "depositHint": "Switch wallet to arbitrum then deposit WETH + USDC"
+    },
+    {
+      "id": "robinhood",
+      "chainId": 4663,
+      "poolId": 4,
+      "pair": "WETH/USDG",
+      "feePercent": 0.05,
+      "aprPct": null,
+      "aprSource": "unavailable",
+      "poolTvlUsd": 0
+    }
+  ]
+}
+```
+
+UI: two cards. Show `aprPct` as “—%” when `aprSource === "unavailable"` (Robinhood may not be on DefiLlama). Highlight the selected card, then `useSwitchChain({ chainId: selectedPool.chainId })` before `approve` + `deposit`.
+
+Hook: `lib/usePools.ts` (`selected`, `setSelected`, `selectedPool`).
+
+Do not deposit on the other chain in the same tx. A user who wants both LPs deposits twice.
+
 ## On-chain reads (wagmi) — do this too
 
 Do not trust the API alone for money. After connect, also `useReadContract`:
@@ -83,7 +126,7 @@ User txs only: `approve` + `deposit` / `depositETH` / `withdraw`. Never `rebalan
 | Route | Data |
 |-------|------|
 | `/app` | `usePortfolio` + `getLatestForecast` |
-| `/app/deposit` | wallet balances from portfolio + approve/deposit |
+| `/app/deposit` | `usePools` cards (APR) → switch chain → approve/deposit |
 | `/app/withdraw` | `shares` + withdraw |
 | `/app/forecasts` | `getForecasts(24)` |
 

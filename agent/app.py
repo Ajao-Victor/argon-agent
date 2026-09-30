@@ -19,6 +19,7 @@ from argon_agent.config import (
     frontend_origins,
 )
 from argon_agent.db import Store
+from argon_agent.pools import list_pools
 from argon_agent.portfolio import snapshot
 from argon_agent.serialize import current_hour_id, row_to_api
 
@@ -64,6 +65,7 @@ def root():
         "latestForecast": "/forecasts/latest",
         "forecasts": "/forecasts?limit=24",
         "vault": "/vault",
+        "pools": "/pools",
         "portfolio": "/portfolio/0xYourAddress",
     }
     if payload.get("lastHourId") is None:
@@ -124,6 +126,12 @@ def latest_forecast():
 def list_forecasts(limit: int = Query(24, ge=1, le=168)):
     items = [row_to_api(r, warmup_complete=_warmup()) for r in store.list_recent(limit)]
     return {"items": items}
+
+
+@app.get("/pools")
+def pools():
+    """Arb vs Robinhood ETH LP cards: Uniswap TVL + APR. Pick one chain before deposit."""
+    return list_pools()
 
 
 @app.get("/vault")
