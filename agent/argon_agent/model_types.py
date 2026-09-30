@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import pickle
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
+
+# Colab pickled this class from the notebook's __main__ module.
+_main = sys.modules.get("__main__")
+if _main is None:
+    _main = types.ModuleType("__main__")
+    sys.modules["__main__"] = _main
 
 
 class DirectionalLightGBM:
@@ -69,18 +77,28 @@ class DirectionalLightGBM:
         return direction * magnitude
 
 
+_main.DirectionalLightGBM = DirectionalLightGBM
+
+_MODULE_ALIASES = {
+    "numpy._core.multiarray": "numpy.core.multiarray",
+    "numpy._core.numeric": "numpy.core.numeric",
+    "numpy._core.umath": "numpy.core.umath",
+    "numpy._core._multiarray_umath": "numpy.core._multiarray_umath",
+}
+
+
 class _ColabUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
-        aliases = {
-            "DirectionalLightGBM": DirectionalLightGBM,
-        }
-        if name in aliases and module in ("__main__", "eth_hourly_prediction"):
-            return aliases[name]
+        if name == "DirectionalLightGBM":
+            return DirectionalLightGBM
+        module = _MODULE_ALIASES.get(module, module)
+        if module.startswith("numpy._core"):
+            module = "numpy.core" + module[len("numpy._core") :]
         try:
             return super().find_class(module, name)
         except (AttributeError, ModuleNotFoundError):
-            if name in aliases:
-                return aliases[name]
+            if name == "DirectionalLightGBM":
+                return DirectionalLightGBM
             raise
 
 

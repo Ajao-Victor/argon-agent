@@ -77,26 +77,32 @@ def _horizon_from_pickle(horizon: str, featured: pd.DataFrame, ohlc: pd.DataFram
     path = _ensure_pickle(horizon)
     if path is None:
         hours = int(horizon.replace("h", ""))
+        log.warning("%s pickle missing at %s; using persistence", horizon, pickle_path(horizon))
         return HorizonPred(pct=persistence_pct(ohlc, hours), source="persistence")
     try:
         bundle = load_bundle(path)
-        return HorizonPred(pct=_predict_bundle(bundle, featured), source="lgbm")
+        pct = _predict_bundle(bundle, featured)
+        log.info("%s pickle loaded from %s → %+.4f%%", horizon, path, pct)
+        return HorizonPred(pct=pct, source="lgbm")
     except Exception:
-        log.exception("Failed to run %s pickle; falling back to persistence", horizon)
         hours = int(horizon.replace("h", ""))
+        if horizon == "8h":
+            log.exception("Failed to run 8h pickle at %s", path)
+            raise
+        log.exception("Failed to run %s pickle; falling back to persistence", horizon)
         return HorizonPred(pct=persistence_pct(ohlc, hours), source="persistence")
 
 
 def infer(days_back: int = 60) -> Inference:
+    path_8h = pickle_path("8h")
+    log.info("8h pickle path=%s exists=%s", path_8h, path_8h.exists())
+    if not path_8h.exists() and not pickle_url("8h"):
+        raise RuntimeError(f"eth_8h_lgbm.pkl is required at {path_8h} or set MODEL_8H_URL.")
     ohlc = fetch_eth_hourly(days_back=days_back)
     featured = create_features(ohlc)
     if featured.empty:
         raise RuntimeError("Feature frame is empty — need more hourly bars")
     p8 = _horizon_from_pickle("8h", featured, ohlc)
-    if p8.source != "lgbm":
-        raise RuntimeError(
-            "eth_8h_lgbm.pkl is required. Copy it to agent/models/ or set MODEL_8H_URL."
-        )
     p1 = _horizon_from_pickle("1h", featured, ohlc)
     p2 = _horizon_from_pickle("2h", featured, ohlc)
     spot, _ = fetch_dia_spot()
