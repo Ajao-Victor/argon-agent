@@ -54,6 +54,23 @@ def _warmup() -> bool:
         return False
 
 
+@app.get("/")
+def root():
+    payload = status()
+    payload["endpoints"] = {
+        "health": "/health",
+        "status": "/status",
+        "latestForecast": "/forecasts/latest",
+        "forecasts": "/forecasts?limit=24",
+    }
+    if payload.get("lastHourId") is None:
+        payload["hint"] = (
+            "No forecasts yet. Add Heroku Postgres, turn the clock dyno on, "
+            "then wait for the next UTC hour (or restart the clock process)."
+        )
+    return payload
+
+
 @app.get("/health")
 def health():
     return {
@@ -85,6 +102,7 @@ def status():
         "modelId": MODEL_ID_TEXT,
         "modelLoaded": eight_h_loaded(),
         "dryRun": os.getenv("DRY_RUN", "false"),
+        "database": "postgres" if store.postgres else "sqlite",
     }
 
 
@@ -92,7 +110,10 @@ def status():
 def latest_forecast():
     row = store.latest()
     if not row:
-        raise HTTPException(status_code=404, detail="no forecasts yet")
+        raise HTTPException(
+            status_code=404,
+            detail="no forecasts yet — add Postgres, enable the clock dyno, then wait for a tick",
+        )
     return row_to_api(row, warmup_complete=_warmup())
 
 
