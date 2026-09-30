@@ -45,6 +45,12 @@ class DirectionalLightGBM:
         self.threshold = float(getattr(self, "threshold", 0.5))
         self.deadzone = float(getattr(self, "deadzone", 0.0))
         self.feature_cols = list(getattr(self, "feature_cols", []))
+        if not hasattr(self, "calibrator"):
+            self.calibrator = None
+        if not hasattr(self, "fade_col"):
+            self.fade_col = None
+        if not hasattr(self, "median_abs_return"):
+            self.median_abs_return = 0.01
 
     def _select_features(self, X):
         if hasattr(X, "loc"):
@@ -55,19 +61,23 @@ class DirectionalLightGBM:
         return X
 
     def _calibrate_proba(self, proba):
-        if self.calibrator is None:
+        calibrator = getattr(self, "calibrator", None)
+        if calibrator is None:
             return proba
-        return np.clip(self.calibrator.predict(proba), 1e-6, 1 - 1e-6)
+        return np.clip(calibrator.predict(proba), 1e-6, 1 - 1e-6)
 
     def predict_direction(self, X):
         X_use = self._select_features(X)
         proba_up = self._calibrate_proba(self.classifier.predict_proba(X_use)[:, 1])
-        model_dir = np.where(proba_up >= self.threshold, 1.0, -1.0)
-        if self.deadzone <= 0 or self.fade_col is None or self.fade_col not in getattr(X_use, "columns", []):
+        threshold = float(getattr(self, "threshold", 0.5))
+        deadzone = float(getattr(self, "deadzone", 0.0))
+        fade_col = getattr(self, "fade_col", None)
+        model_dir = np.where(proba_up >= threshold, 1.0, -1.0)
+        if deadzone <= 0 or fade_col is None or fade_col not in getattr(X_use, "columns", []):
             return model_dir, proba_up
-        fade = np.sign(np.asarray(X_use[self.fade_col]).ravel())
+        fade = np.sign(np.asarray(X_use[fade_col]).ravel())
         fade = np.where(fade == 0, model_dir, fade)
-        unsure = np.abs(proba_up - self.threshold) < self.deadzone
+        unsure = np.abs(proba_up - threshold) < deadzone
         return np.where(unsure, fade, model_dir), proba_up
 
     def predict(self, X):
