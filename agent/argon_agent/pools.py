@@ -47,7 +47,7 @@ def llama_rows() -> list[dict]:
     if _LLAMA_CACHE["rows"] and now - _LLAMA_CACHE["ts"] < _LLAMA_TTL:
         return _LLAMA_CACHE["rows"]
     try:
-        resp = requests.get(LLAMA_URL, timeout=20)
+        resp = requests.get(LLAMA_URL, timeout=5)
         resp.raise_for_status()
         rows = resp.json().get("data") or []
         _LLAMA_CACHE["ts"] = now
@@ -104,7 +104,7 @@ def dex_pair(cfg: ChainCfg, pool: str) -> dict | None:
     if packed and now - packed[0] < _DEX_TTL:
         return packed[1]
     try:
-        resp = requests.get(DEX_PAIR_URL.format(chain=chain, pool=pool), timeout=15)
+        resp = requests.get(DEX_PAIR_URL.format(chain=chain, pool=pool), timeout=5)
         resp.raise_for_status()
         pairs = resp.json().get("pairs") or []
         hit = None
@@ -120,7 +120,12 @@ def dex_pair(cfg: ChainCfg, pool: str) -> dict | None:
 
 
 def match_apr(cfg: ChainCfg, pool: str, tvl_usd: float | None = None) -> dict:
-    llama = match_llama_apr(cfg, pool)
+    # Robinhood is not on DefiLlama. Skip the multi-megabyte yields file so /pools stays fast.
+    llama = (
+        {"aprPct": None, "aprBasePct": None, "aprSource": "unavailable", "llamaTvlUsd": None, "volumeUsd1d": None}
+        if cfg.name == "robinhood"
+        else match_llama_apr(cfg, pool)
+    )
     if llama.get("aprPct") is not None:
         return llama
     pair = dex_pair(cfg, pool)
@@ -178,7 +183,11 @@ def describe_pool(cfg: ChainCfg) -> dict:
         in_pool = int(vault.functions.poolStatus(cfg.pool_id).call()) == 1
     except Exception:
         pass
-    apr = match_apr(cfg, pool_addr, usd8_to_float(tvl8))
+    try:
+        apr = match_apr(cfg, pool_addr, usd8_to_float(tvl8))
+    except Exception:
+        log.exception("APR lookup failed on %s; returning on-chain TVL", cfg.name)
+        apr = {"aprPct": None, "aprBasePct": None, "aprSource": "unavailable", "llamaTvlUsd": None, "volumeUsd1d": None}
     return {
         "id": cfg.name,
         "chainId": cfg.chain_id,
@@ -214,8 +223,12 @@ def list_pools() -> dict:
                     "id": cfg.name,
                     "chainId": cfg.chain_id,
                     "poolId": cfg.pool_id,
+                    "pair": "WETH/USDC" if cfg.name == "arbitrum" else "WETH/USDG",
                     "error": str(exc),
                     "selectable": False,
+                    "inPool": False,
+                    "poolTvlUsd": None,
+                    "ethUsd": None,
                     "aprPct": None,
                     "aprSource": "unavailable",
                 }
