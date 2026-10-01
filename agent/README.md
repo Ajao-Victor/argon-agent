@@ -30,9 +30,8 @@ Tiingo + DIA ──► infer.py (8h LightGBM pickle)
 These are **not** in git:
 
 1. **`models/eth_8h_lgbm.pkl`** — the Colab pickle you already downloaded. Copy it here, or set `MODEL_8H_URL` to a public/signed HTTPS file the dyno can download at boot.
-2. **`TIINGO_API_KEY`** — same key that trained the model. The agent sends `Authorization: Token <key>`.
-3. **`KEEPER_PRIVATE_KEY`** — the EOA already set as `keeper` on the registry and vault. Fund it with ETH on **both** Arbitrum and Robinhood for gas.
-4. **`FRONTEND_ORIGIN`** — your Vercel production URL (preview `*.vercel.app` is already allowed).
+2. **`KEEPER_PRIVATE_KEY`** — the EOA already set as `keeper` on the registry and vault. Fund it with ETH on **both** Arbitrum and Robinhood for gas.
+3. **`FRONTEND_ORIGIN`** — your Vercel production URL (preview `*.vercel.app` is already allowed).
 
 Optional later: `eth_1h_lgbm.pkl` and `eth_2h_lgbm.pkl` trained the same way as the 8h head. Until those exist, 1h and 2h are **persistence nowcasts** (last 1h / 2h realized ETH %). That is *not* `pred_8h / 8`. The 8h number always comes from LightGBM.
 
@@ -44,7 +43,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# edit .env: TIINGO_API_KEY, copy pickle to models/eth_8h_lgbm.pkl
+# edit .env: copy pickle to models/eth_8h_lgbm.pkl
 # leave DRY_RUN=true until you want on-chain txs
 
 PYTHONPATH=. python infer_once.py          # one tick → sqlite forecasts.db
@@ -59,7 +58,7 @@ With `DRY_RUN=true` the API and DB still update; `submit` / `rebalance` are skip
 
 Every UTC hour (`clock.py`):
 
-1. Fetch ~60 days of hourly ETH from Tiingo (no date-only `endDate`); drop the in-progress hour. The last bar **must** be `hourId-1`. A previous-day bar fails the tick instead of being stamped on the current hour.
+1. Fetch ~60 days of hourly ETH-USD from Coinbase (no API key); drop the in-progress hour. The last bar **must** be `hourId-1`. A previous-day bar fails the tick instead of being stamped on the current hour.
 2. Rebuild the training feature set; run the 8h pickle → predicted ETH **price** in 8h (`predEthUsd8h`) from the last closed hour’s close. Dashboard still shows the derived %.
 3. First hour of a streak: 1h/2h are persistence nowcasts. From the next hour, 1h/2h are **catch-up** vs that previously submitted 8h price path (what the agent uses to decide).
 4. Convert to signed bps (`-1.50%` → `-150`).

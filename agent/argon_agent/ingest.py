@@ -1,20 +1,19 @@
-"""Tiingo hourly ETH bars + DIA spot. Token comes from TIINGO_API_KEY only."""
+"""Coinbase hourly ETH bars + DIA spot. No API key for the candles."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import logging
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
 
-from argon_agent.bars import append_bars, bar_hour_id
-from argon_agent.config import tiingo_api_key
+from argon_agent.bars import append_bars
 
 log = logging.getLogger("argon.ingest")
 
-TIINGO_URL = "https://api.tiingo.com/tiingo/crypto/prices"
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/ETH-USD/candles"
+COINBASE_PAGE_HOURS = 300
 DIA_URL = (
     "https://api.diadata.org/v1/assetQuotation/Ethereum/"
     "0x0000000000000000000000000000000000000000"
@@ -35,50 +34,7 @@ def _iso(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _fetch_tiingo_hourly(days_back: int) -> pd.DataFrame:
-    key = tiingo_api_key()
-    if not key:
-        raise RuntimeError("TIINGO_API_KEY is not set")
-
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days_back)
-    headers = {"Content-Type": "application/json", "Authorization": f"Token {key}"}
-    # Full timestamps. A date-only endDate is midnight and drops today's hours.
-    params = {
-        "tickers": "ethusd",
-        "startDate": _iso(start),
-        "endDate": _iso(end),
-        "resampleFreq": "1hour",
-        "token": key,
-    }
-    resp = requests.get(TIINGO_URL, headers=headers, params=params, timeout=60)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Tiingo {resp.status_code}: {resp.text[:300]}")
-    payload = resp.json()
-    if not payload:
-        raise RuntimeError("Tiingo returned empty payload")
-    price_data = payload[0]["priceData"] if isinstance(payload, list) else payload["priceData"]
-    rows = [
-        {
-            "Date": pd.to_datetime(p["date"], utc=True),
-            "Open": p["open"],
-            "High": p["high"],
-            "Low": p["low"],
-            "Close": p["close"],
-            "Volume": p["volume"],
-        }
-        for p in price_data
-    ]
-    df = pd.DataFrame(rows).set_index("Date").sort_index().dropna()
-    if df.empty:
-        raise RuntimeError("No ETH bars after cleaning")
-    return df
-
-
-def fetch_coinbase_hourly(hours: int = 48) -> pd.DataFrame:
-    """Public ETH-USD hourly candles. Fills the tail when Tiingo stops early."""
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(hours=hours)
+def _coinbase_page(start: datetime, end: datetime) -> pd.DataFrame:
     resp = requests.get(
         COINBASE_CANDLES,
         params={"granularity": 3600, "start": _iso(start), "end": _iso(end)},
@@ -101,22 +57,32 @@ def fetch_coinbase_hourly(hours: int = 48) -> pd.DataFrame:
             }
         )
     if not rows:
-        raise RuntimeError("Coinbase returned no hourly candles")
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
     return pd.DataFrame(rows).set_index("Date").sort_index()
 
 
+def fetch_coinbase_hourly(hours: int = 48) -> pd.DataFrame:
+    """Public ETH-USD hourly candles. Coinbase returns at most 300 bars per call."""
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    floor = end - timedelta(hours=max(hours, 1))
+    frames: list[pd.DataFrame] = []
+    cursor = end
+    while cursor > floor:
+        page_start = max(floor, cursor - timedelta(hours=COINBASE_PAGE_HOURS))
+        frames.append(_coinbase_page(page_start, cursor))
+        cursor = page_start
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        raise RuntimeError("Coinbase returned no hourly candles")
+    df = pd.concat(frames).sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    return df
+
+
 def fetch_eth_hourly(days_back: int = 60) -> pd.DataFrame:
-    df = _fetch_tiingo_hourly(days_back)
-    need = int(datetime.now(timezone.utc).timestamp() // 3600) - 1
-    last = bar_hour_id(df.index[-1])
-    if last < need:
-        gap_hours = min(300, max(48, need - last + 2))
-        log.warning("Tiingo last hour %s; need %s. Filling %s hours from Coinbase.", last, need, gap_hours)
-        extra = fetch_coinbase_hourly(hours=gap_hours)
-        df = append_bars(df, extra)
-        log.info("ETH bars now through %s", df.index[-1])
-    else:
-        df = append_bars(df, None)
+    hours = max(int(days_back) * 24, 200)
+    df = append_bars(fetch_coinbase_hourly(hours=hours), None)
     if df.empty:
         raise RuntimeError("No ETH bars after cleaning")
+    log.info("Coinbase ETH bars %s → %s (%s rows)", df.index[0], df.index[-1], len(df))
     return df
