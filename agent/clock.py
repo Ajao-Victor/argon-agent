@@ -19,19 +19,17 @@ def seconds_until_next_hour() -> float:
 
 
 def main() -> None:
-    log.info("clock starting — running first tick immediately")
-    try:
-        run_hour()
-    except Exception:
-        log.exception("boot tick failed")
+    log.info("clock starting — inferring this UTC hour, then retrying until it is stored")
     while True:
-        wait = seconds_until_next_hour()
-        log.info("sleeping %.0fs until next UTC hour", wait)
-        time.sleep(wait)
         try:
             run_hour()
         except Exception:
-            log.exception("hourly tick failed")
+            log.exception("tick failed — retrying this UTC hour in 60s")
+            time.sleep(60)
+            continue
+        wait = seconds_until_next_hour()
+        log.info("hour stored, sleeping %.0fs until next UTC hour", wait)
+        time.sleep(wait)
 
 
 if __name__ == "__main__":
