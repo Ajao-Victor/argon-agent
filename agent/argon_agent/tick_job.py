@@ -94,11 +94,16 @@ def run_hour(store: Store | None = None) -> dict:
     live = chainmod.clients()
     in_pool = chainmod.any_in_pool(live)
     db_count = store.count()
-    warmup_complete = db_count + 1 >= WARMUP_SUBMITS
+    onchain_count = None
     if live:
-        onchain = live[0].onchain_warmup_complete()
-        if onchain is True:
-            warmup_complete = True
+        onchain_count = live[0].forecast_count()
+    if onchain_count is None:
+        onchain_count = chainmod.registry_forecast_count()
+    # Vault warmup is on-chain forecastCount >= 9. Postgres dry-run rows do not count.
+    if onchain_count is not None:
+        warmup_complete = onchain_count + 1 >= WARMUP_SUBMITS
+    else:
+        warmup_complete = db_count + 1 >= WARMUP_SUBMITS
 
     action_code = allowed_action(
         pct1h_bps, pct2h_bps, pct8h_bps, in_pool=in_pool, warmup_complete=warmup_complete

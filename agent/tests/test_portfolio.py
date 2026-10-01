@@ -1,4 +1,4 @@
-from argon_agent.accounting import pro_rata, usd8_from_stable, usd8_from_weth, usd8_to_float
+from argon_agent.accounting import fee_apr_pct, pro_rata, usd8_from_stable, usd8_from_weth, usd8_to_float
 
 
 def test_usd8_weth():
@@ -17,3 +17,11 @@ def test_pro_rata():
     assert pro_rata(1_000 * 10**8, 25, 100) == 250 * 10**8
     assert pro_rata(100, 0, 10) == 0
     assert pro_rata(100, 1, 0) == 0
+
+
+def test_uniswap_fee_apr_from_daily_volume():
+    # $1m volume, $1m TVL, 0.05% fee → 0.05% * 365 = 18.25% APR
+    apr = fee_apr_pct(1_000_000, 1_000_000, 500)
+    assert apr is not None
+    assert abs(apr - 18.25) < 1e-9
+    assert fee_apr_pct(100, 0, 500) is None

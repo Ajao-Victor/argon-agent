@@ -171,7 +171,7 @@ export type LpPool = {
   depositHint: string;
   aprPct: number | null;
   aprBasePct: number | null;
-  aprSource: "defillama" | "unavailable";
+  aprSource: "defillama" | "dexscreener" | "unavailable";
   llamaTvlUsd: number | null;
   volumeUsd1d: number | null;
   error?: string;

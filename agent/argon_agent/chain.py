@@ -141,6 +141,20 @@ class ChainClient:
         )
 
 
+def registry_forecast_count() -> int | None:
+    """View-only. Does not need the keeper key."""
+    cfgs = [c for c in chains() if c.enabled]
+    if not cfgs:
+        return None
+    try:
+        w3 = Web3(Web3.HTTPProvider(cfgs[0].rpc, request_kwargs={"timeout": 20}))
+        reg = w3.eth.contract(address=Web3.to_checksum_address(REGISTRY), abi=REGISTRY_ABI)
+        return int(reg.functions.forecastCount().call())
+    except Exception:
+        log.exception("registry forecastCount read failed")
+        return None
+
+
 def clients() -> list[ChainClient]:
     key = keeper_key()
     if not key:

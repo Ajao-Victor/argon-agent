@@ -49,11 +49,28 @@ app.add_middleware(
 )
 
 
-def _warmup() -> bool:
+def _warmup_state() -> tuple[bool, int, int | None, int]:
+    db_n = 0
     try:
-        return store.count() >= WARMUP_SUBMITS
+        db_n = store.count()
     except Exception:
-        return False
+        pass
+    onchain_n = None
+    try:
+        from argon_agent.chain import registry_forecast_count
+
+        onchain_n = registry_forecast_count()
+    except Exception:
+        log.exception("on-chain forecastCount failed")
+    n = onchain_n if onchain_n is not None else db_n
+    complete = n >= WARMUP_SUBMITS
+    remaining = 0 if complete else max(0, WARMUP_SUBMITS - n)
+    return complete, remaining, onchain_n, db_n
+
+
+def _warmup() -> bool:
+    complete, _, _, _ = _warmup_state()
+    return complete
 
 
 @app.get("/")
@@ -87,14 +104,13 @@ def health():
 
 @app.get("/status")
 def status():
-    warmup = _warmup()
+    warmup, remaining, onchain_n, db_n = _warmup_state()
     latest = None
     try:
         latest = store.latest()
     except Exception:
         log.exception("status latest failed")
     last_hour = int(latest["hour_id"]) if latest else None
-    remaining = 0 if warmup else max(0, WARMUP_SUBMITS - store.count())
     current = current_hour_id()
     payload = {
         "ok": True,
@@ -110,6 +126,8 @@ def status():
         "modelLoaded": eight_h_loaded(),
         "dryRun": os.getenv("DRY_RUN", "false"),
         "database": "postgres" if store.postgres else "sqlite",
+        "onchainForecastCount": onchain_n,
+        "dbForecastCount": db_n,
     }
     if last_hour != current:
         payload["hint"] = (

@@ -17,3 +17,10 @@ def pro_rata(total: int, shares: int, supply: int) -> int:
 
 def usd8_to_float(usd8: int) -> float:
     return int(usd8) / 1e8
+
+
+def fee_apr_pct(volume_usd_1d: float, tvl_usd: float, fee_ppm: int) -> float | None:
+    """Uniswap v3 LP fee APR from 24h volume. fee_ppm is the pool fee (500 = 0.05%)."""
+    if tvl_usd <= 0 or volume_usd_1d < 0 or fee_ppm <= 0:
+        return None
+    return float(volume_usd_1d) * (float(fee_ppm) / 1_000_000.0) / float(tvl_usd) * 365.0 * 100.0
