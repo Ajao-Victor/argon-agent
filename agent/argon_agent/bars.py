@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -16,6 +17,22 @@ def bar_hour_id(ts) -> int:
     else:
         stamp = stamp.tz_convert("UTC")
     return int(stamp.timestamp() // 3600)
+
+
+def append_bars(base: pd.DataFrame, extra: pd.DataFrame | None) -> pd.DataFrame:
+    """Append bars strictly after `base`. Used to fill hours Tiingo did not return."""
+    if extra is None or extra.empty:
+        out = base.copy()
+    elif base.empty:
+        out = extra.copy()
+    else:
+        addon = extra[extra.index > base.index[-1]]
+        out = pd.concat([base, addon]).sort_index()
+        out = out[~out.index.duplicated(keep="last")]
+    out = out.copy()
+    close = out["Close"].astype(float)
+    out["traditional_log_return"] = np.log(close / close.shift(1))
+    return out
 
 
 def closed_bars_for_hour(ohlc: pd.DataFrame, hour_id: int) -> pd.DataFrame:
