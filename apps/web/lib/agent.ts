@@ -6,11 +6,14 @@ export type Forecast = {
   hourId: number;
   targetHourId: number;
   submittedAt: string;
+  predEthUsd8h: number | null;
+  barCloseUsd: number | null;
+  expectedEthUsd1h: number | null;
   ethPct1h: number;
   ethPct2h: number;
   ethPct8h: number;
-  ethPct1hSource: "lgbm" | "persistence";
-  ethPct2hSource: "lgbm" | "persistence";
+  ethPct1hSource: "lgbm" | "persistence" | "catchup";
+  ethPct2hSource: "lgbm" | "persistence" | "catchup";
   ethPct8hSource: "lgbm" | "persistence";
   spotUsd: number | null;
   modelId: string;
@@ -29,6 +32,9 @@ export type Forecast = {
   rebalanceTxRh: string | null;
   poolStatusArb: 0 | 1 | null;
   poolStatusRh: 0 | 1 | null;
+  barTime: string | null;
+  barHourId: number | null;
+  live: boolean;
   trippedHorizons: Array<"1h" | "2h" | "8h">;
 };
 
@@ -41,6 +47,7 @@ export type AgentStatus = {
   gate8hBps: number;
   lastHourId: number | null;
   currentHourId: number;
+  liveForecast: boolean;
   modelId: string;
   modelLoaded: boolean;
 };
@@ -108,7 +115,10 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function getLatestForecast() {
-  return getJson<Forecast>("/forecasts/latest");
+  return getJson<Forecast>("/forecasts/latest", {
+    cache: "no-store",
+    next: { revalidate: 0 },
+  });
 }
 
 export function getForecasts(limit = 24) {
@@ -120,7 +130,10 @@ export function getForecast(hourId: number) {
 }
 
 export function getAgentStatus() {
-  return getJson<AgentStatus>("/status");
+  return getJson<AgentStatus>("/status", {
+    cache: "no-store",
+    next: { revalidate: 0 },
+  });
 }
 
 export function getHealth() {

@@ -3,30 +3,89 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from argon_agent.config import MODEL_ID_TEXT, WARMUP_SUBMITS
 from argon_agent.db import Store, now_iso
 from argon_agent.hashing import forecast_hash, hex_hash
-from argon_agent.policy import action_name, allowed_action, pct_to_bps
+from argon_agent.policy import action_name, allowed_action, catchup_pct, path_expected_price, pct_to_bps
 from argon_agent.serialize import current_hour_id, row_to_api
 
 log = logging.getLogger("argon.tick")
 
+INFER_ATTEMPTS = 8
+INFER_RETRY_SECS = 12
+
+
+def _infer_live(hour_id: int):
+    from argon_agent.bars import StaleBarError
+    from argon_agent.infer import infer
+
+    last_err: Exception | None = None
+    for attempt in range(1, INFER_ATTEMPTS + 1):
+        try:
+            return infer(hour_id=hour_id)
+        except StaleBarError as exc:
+            last_err = exc
+            log.warning("hour %s stale bar attempt %s/%s: %s", hour_id, attempt, INFER_ATTEMPTS, exc)
+            if attempt < INFER_ATTEMPTS:
+                time.sleep(INFER_RETRY_SECS)
+    assert last_err is not None
+    raise last_err
+
 
 def run_hour(store: Store | None = None) -> dict:
     from argon_agent import chain as chainmod
-    from argon_agent.infer import infer
 
     store = store or Store()
     store.ensure_schema()
     hour_id = current_hour_id()
     existing = store.get(hour_id)
     if existing:
-        log.info("hour %s already stored", hour_id)
+        log.info("hour %s already stored (live)", hour_id)
         warmup = store.count() >= WARMUP_SUBMITS
         return row_to_api(existing, warmup_complete=warmup)
 
-    prediction = infer()
+    prediction = _infer_live(hour_id)
+    prior_1h = store.get(hour_id - 1)
+    prior_2h = store.get(hour_id - 2)
+    expected_1h = None
+    if prior_1h and prior_1h.get("pred_eth_usd_8h") and prior_1h.get("bar_close_usd"):
+        from argon_agent.infer import HorizonPred
+
+        start = float(prior_1h["bar_close_usd"])
+        target = float(prior_1h["pred_eth_usd_8h"])
+        expected_1h = path_expected_price(start, target, 1)
+        prediction.eth_pct_1h = HorizonPred(
+            pct=catchup_pct(start, target, prediction.close, 1),
+            source="catchup",
+        )
+        log.info(
+            "hour %s 1h catch-up vs prior $%.2f path: expected $%.2f actual $%.2f",
+            hour_id,
+            target,
+            expected_1h,
+            prediction.close,
+        )
+    if prior_2h and prior_2h.get("pred_eth_usd_8h") and prior_2h.get("bar_close_usd"):
+        from argon_agent.infer import HorizonPred
+
+        start = float(prior_2h["bar_close_usd"])
+        target = float(prior_2h["pred_eth_usd_8h"])
+        prediction.eth_pct_2h = HorizonPred(
+            pct=catchup_pct(start, target, prediction.close, 2),
+            source="catchup",
+        )
+    if (
+        prior_1h
+        and int(prior_1h["hour_id"]) != hour_id
+        and float(prior_1h.get("eth_pct_8h") or 0) == prediction.eth_pct_8h.pct
+        and abs(float(prior_1h.get("pred_eth_usd_8h") or 0) - prediction.pred_eth_usd_8h) < 1e-9
+    ):
+        raise RuntimeError(
+            f"hour {hour_id} 8h predicted price ${prediction.pred_eth_usd_8h:.2f} "
+            f"matches hour {prior_1h['hour_id']} (refusing to restamp the previous 8h price)"
+        )
     pct1h_bps = pct_to_bps(prediction.eth_pct_1h.pct)
     pct2h_bps = pct_to_bps(prediction.eth_pct_2h.pct)
     pct8h_bps = pct_to_bps(prediction.eth_pct_8h.pct)
@@ -70,6 +129,11 @@ def run_hour(store: Store | None = None) -> dict:
             "rebalance_tx_rh": None,
             "pool_status_arb": None,
             "pool_status_rh": None,
+            "bar_time": prediction.bar_time,
+            "bar_hour_id": prediction.bar_hour_id,
+            "pred_eth_usd_8h": prediction.pred_eth_usd_8h,
+            "bar_close_usd": prediction.close,
+            "expected_eth_usd_1h": expected_1h,
         }
     )
     store.mature(hour_id, prediction.spot_usd)
@@ -96,15 +160,16 @@ def run_hour(store: Store | None = None) -> dict:
     row = store.get(hour_id)
     assert row is not None
     api = row_to_api(row, warmup_complete=warmup_complete)
-    api["barTime"] = prediction.bar_time
     api["close"] = prediction.close
     log.info(
-        "hour %s action=%s 1h=%+.2f 2h=%+.2f 8h=%+.2f hash=%s",
+        "hour %s action=%s pred8h=$%.2f 1h=%+.2f 2h=%+.2f 8h=%+.2f bar=%s hash=%s",
         hour_id,
         action,
+        prediction.pred_eth_usd_8h,
         prediction.eth_pct_1h.pct,
         prediction.eth_pct_2h.pct,
         prediction.eth_pct_8h.pct,
+        prediction.bar_time,
         api["forecastHash"],
     )
     return api

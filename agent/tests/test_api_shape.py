@@ -20,6 +20,8 @@ def test_api_shape():
         "eth_pct_2h_source": "persistence",
         "eth_pct_8h_source": "lgbm",
         "spot_usd": 2410.12,
+        "pred_eth_usd_8h": 2374.0,
+        "bar_close_usd": 2410.12,
         "model_id": "eth-1-2-8h-v1",
         "status": "pending",
         "realized_pct_change": None,
@@ -33,9 +35,13 @@ def test_api_shape():
         "pool_status_arb": 1,
         "pool_status_rh": 0,
     }
-    payload = row_to_api(row, warmup_complete=True)
+    payload = row_to_api(row, warmup_complete=True, now_hour=1)
     assert payload["hourId"] == 1
     assert payload["ethPct8h"] == -1.5
     assert payload["action"] == "enter"
     assert payload["warmupComplete"] is True
     assert payload["forecastHash"] == "0xabc"
+    assert payload["live"] is True
+    assert payload["barHourId"] is None
+    assert payload["predEthUsd8h"] == 2374.0
+    assert payload["barCloseUsd"] == 2410.12

@@ -15,7 +15,7 @@ log = logging.getLogger("argon.clock")
 def seconds_until_next_hour() -> float:
     now = datetime.now(timezone.utc)
     elapsed = now.minute * 60 + now.second + now.microsecond / 1e6
-    return max(5.0, 3600.0 - elapsed + 8.0)
+    return max(5.0, 3600.0 - elapsed + 25.0)
 
 
 def main() -> None:

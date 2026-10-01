@@ -36,7 +36,12 @@ CREATE TABLE IF NOT EXISTS forecasts (
   rebalance_tx        TEXT,
   rebalance_tx_rh     TEXT,
   pool_status_arb     INTEGER,
-  pool_status_rh      INTEGER
+  pool_status_rh      INTEGER,
+  bar_time            TIMESTAMPTZ,
+  bar_hour_id         BIGINT,
+  pred_eth_usd_8h     DOUBLE PRECISION,
+  bar_close_usd       DOUBLE PRECISION,
+  expected_eth_usd_1h DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS forecasts_target_idx ON forecasts (target_hour_id);
 """
@@ -85,12 +90,25 @@ class Store:
 
     def ensure_schema(self) -> None:
         schema = PG_SCHEMA if self.postgres else SQLITE_SCHEMA
+        bar_type = "TIMESTAMPTZ" if self.postgres else "TEXT"
+        migrations = [
+            f"ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS bar_time {bar_type}",
+            "ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS bar_hour_id BIGINT",
+            "ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS pred_eth_usd_8h DOUBLE PRECISION",
+            "ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS bar_close_usd DOUBLE PRECISION",
+            "ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS expected_eth_usd_1h DOUBLE PRECISION",
+        ]
         with self.conn() as c:
             cur = c.cursor()
             for stmt in schema.split(";"):
                 s = stmt.strip()
                 if s:
                     cur.execute(s)
+            for stmt in migrations:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    log.debug("migration skipped: %s", stmt)
 
     def count(self) -> int:
         with self.conn() as c:

@@ -35,10 +35,11 @@ def fetch_eth_hourly(days_back: int = 60) -> pd.DataFrame:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days_back)
     headers = {"Content-Type": "application/json", "Authorization": f"Token {key}"}
+    # Omit date-only endDate — Tiingo treats YYYY-MM-DD as midnight, which can
+    # clip today's hours and leave yesterday 23:00 as the last bar.
     params = {
         "tickers": "ethusd",
         "startDate": start.strftime("%Y-%m-%d"),
-        "endDate": end.strftime("%Y-%m-%d"),
         "resampleFreq": "1hour",
         "token": key,
     }

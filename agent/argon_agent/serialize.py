@@ -13,13 +13,19 @@ def current_hour_id(now: datetime | None = None) -> int:
     return int(now.timestamp() // 3600)
 
 
-def row_to_api(row: dict, *, warmup_complete: bool | None = None) -> dict:
+def row_to_api(row: dict, *, warmup_complete: bool | None = None, now_hour: int | None = None) -> dict:
     if warmup_complete is None:
         warmup_complete = row.get("action") != "warmup"
+    hour_id = int(row["hour_id"])
+    live_hour = current_hour_id() if now_hour is None else int(now_hour)
+    bar_hour = row.get("bar_hour_id")
     return {
-        "hourId": int(row["hour_id"]),
+        "hourId": hour_id,
         "targetHourId": int(row["target_hour_id"]),
         "submittedAt": _iso(row.get("submitted_at")),
+        "predEthUsd8h": _f(row.get("pred_eth_usd_8h")),
+        "barCloseUsd": _f(row.get("bar_close_usd")),
+        "expectedEthUsd1h": _f(row.get("expected_eth_usd_1h")),
         "ethPct1h": float(row["eth_pct_1h"]),
         "ethPct2h": float(row["eth_pct_2h"]),
         "ethPct8h": float(row["eth_pct_8h"]),
@@ -43,6 +49,9 @@ def row_to_api(row: dict, *, warmup_complete: bool | None = None) -> dict:
         "rebalanceTxRh": row.get("rebalance_tx_rh"),
         "poolStatusArb": row.get("pool_status_arb"),
         "poolStatusRh": row.get("pool_status_rh"),
+        "barTime": _iso(row.get("bar_time")),
+        "barHourId": int(bar_hour) if bar_hour is not None else None,
+        "live": hour_id == live_hour,
         "trippedHorizons": tripped_horizons(
             pct_to_bps(row["eth_pct_1h"]),
             pct_to_bps(row["eth_pct_2h"]),

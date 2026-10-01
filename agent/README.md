@@ -59,9 +59,9 @@ With `DRY_RUN=true` the API and DB still update; `submit` / `rebalance` are skip
 
 Every UTC hour (`clock.py`):
 
-1. Fetch ~60 days of hourly ETH from Tiingo; DIA for spot.
-2. Rebuild the training feature set; run the 8h pickle → `ethPct8h`.
-3. Fill `ethPct1h` / `ethPct2h` from dedicated pickles or persistence.
+1. Fetch ~60 days of hourly ETH from Tiingo (no date-only `endDate`); drop the in-progress hour. The last bar **must** be `hourId-1`. A previous-day bar fails the tick instead of being stamped on the current hour.
+2. Rebuild the training feature set; run the 8h pickle → predicted ETH **price** in 8h (`predEthUsd8h`) from the last closed hour’s close. Dashboard still shows the derived %.
+3. First hour of a streak: 1h/2h are persistence nowcasts. From the next hour, 1h/2h are **catch-up** vs that previously submitted 8h price path (what the agent uses to decide).
 4. Convert to signed bps (`-1.50%` → `-150`).
 5. `forecastHash = keccak256(abi.encode(hourId, pct1h, pct2h, pct8h, keccak256("eth-1-2-8h-v1")))`.
 6. Insert Postgres. Mark matured rows when `now_hour >= hour_id + 8`.
@@ -98,6 +98,9 @@ There is **no** public `POST /predict`. CORS is locked to `FRONTEND_ORIGIN` plus
   "hourId": 488888,
   "targetHourId": 488896,
   "submittedAt": "2026-09-29T11:00:00+00:00",
+  "predEthUsd8h": 2374.0,
+  "barCloseUsd": 2410.12,
+  "expectedEthUsd1h": null,
   "ethPct1h": -0.40,
   "ethPct2h": -1.10,
   "ethPct8h": -1.50,
@@ -112,6 +115,9 @@ There is **no** public `POST /predict`. CORS is locked to `FRONTEND_ORIGIN` plus
   "warmupComplete": true,
   "forecastHash": "0x…",
   "txHash": "0x…",
+  "barTime": "2026-09-29T10:00:00+00:00",
+  "barHourId": 488887,
+  "live": true,
   "trippedHorizons": []
 }
 ```
@@ -203,7 +209,7 @@ NEXT_PUBLIC_WALLETCONNECT_ID=
 
 3. Deploy. Copy the production URL.
 4. `heroku config:set FRONTEND_ORIGIN=https://your-app.vercel.app`
-5. Poll `/forecasts/latest` every 30–60s (and around `:01` UTC). If Heroku is down, show the last on-chain `getForecast` and a banner — do not invent a %.
+5. Poll `/forecasts/latest` every 30–60s (and around `:01` UTC). It **404s** unless Postgres has a row for the current UTC hour — do not fall back to `/forecasts` history (that was serving yesterday as live). If Heroku is down, show the last on-chain `getForecast` and a banner — do not invent a %.
 
 Do **not** put `KEEPER_PRIVATE_KEY` or `TIINGO_API_KEY` in Vercel.
 

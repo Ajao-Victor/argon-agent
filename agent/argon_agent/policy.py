@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from argon_agent.config import GATE_1H_BPS, GATE_2H_BPS, GATE_8H_BPS
 
 HOLD = 0
@@ -46,6 +48,31 @@ def action_name(code: int, warmup_complete: bool) -> str:
     if not warmup_complete:
         return "warmup"
     return ACTION_NAME[code]
+
+
+def pred_price_from_log_return(close: float, log_return: float) -> float:
+    """8h model outputs log-return; this is ETH USD at the horizon from that bar close."""
+    return float(close) * math.exp(float(log_return))
+
+
+def pct_from_prices(start: float, predicted: float) -> float:
+    return (float(predicted) / float(start) - 1.0) * 100.0
+
+
+def path_expected_price(start: float, target: float, elapsed: int, horizon: int = 8) -> float:
+    """Geometric path from the hour-0 close to the submitted 8h predicted price."""
+    start = float(start)
+    target = float(target)
+    if start <= 0 or target <= 0 or horizon <= 0:
+        raise ValueError("invalid price path")
+    frac = min(max(int(elapsed), 0) / float(horizon), 1.0)
+    return start * ((target / start) ** frac)
+
+
+def catchup_pct(start: float, target: float, current: float, elapsed: int, horizon: int = 8) -> float:
+    """% the current bar is off the previously submitted 8h price path (1h catch-up)."""
+    expected = path_expected_price(start, target, elapsed, horizon)
+    return (float(current) / expected - 1.0) * 100.0
 
 
 def tripped_horizons(pct1h_bps: int, pct2h_bps: int, pct8h_bps: int) -> list[str]:

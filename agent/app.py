@@ -95,7 +95,8 @@ def status():
         log.exception("status latest failed")
     last_hour = int(latest["hour_id"]) if latest else None
     remaining = 0 if warmup else max(0, WARMUP_SUBMITS - store.count())
-    return {
+    current = current_hour_id()
+    payload = {
         "ok": True,
         "warmupComplete": warmup,
         "hoursUntilFirstDecision": remaining,
@@ -103,23 +104,35 @@ def status():
         "gate2hBps": GATE_2H_BPS,
         "gate8hBps": GATE_8H_BPS,
         "lastHourId": last_hour,
-        "currentHourId": current_hour_id(),
+        "currentHourId": current,
+        "liveForecast": last_hour == current,
         "modelId": MODEL_ID_TEXT,
         "modelLoaded": eight_h_loaded(),
         "dryRun": os.getenv("DRY_RUN", "false"),
         "database": "postgres" if store.postgres else "sqlite",
     }
+    if last_hour != current:
+        payload["hint"] = (
+            "No live infer for this UTC hour yet. Do not display lastHourId as the current forecast."
+        )
+    return payload
 
 
 @app.get("/forecasts/latest")
 def latest_forecast():
-    row = store.latest()
+    current = current_hour_id()
+    row = store.get(current)
     if not row:
+        last = store.latest()
         raise HTTPException(
             status_code=404,
-            detail="no forecasts yet — add Postgres, enable the clock dyno, then wait for a tick",
+            detail={
+                "reason": "no live forecast for the current hour",
+                "currentHourId": current,
+                "lastHourId": int(last["hour_id"]) if last else None,
+            },
         )
-    return row_to_api(row, warmup_complete=_warmup())
+    return row_to_api(row, warmup_complete=_warmup(), now_hour=current)
 
 
 @app.get("/forecasts")
@@ -148,8 +161,9 @@ def user_portfolio(address: str):
     if not Web3.is_address(address):
         raise HTTPException(status_code=400, detail="invalid address")
     payload = snapshot(address)
-    latest = store.latest()
-    payload["forecast"] = row_to_api(latest, warmup_complete=_warmup()) if latest else None
+    current = current_hour_id()
+    live = store.get(current)
+    payload["forecast"] = row_to_api(live, warmup_complete=_warmup(), now_hour=current) if live else None
     return payload
 
 
