@@ -139,15 +139,13 @@ def status():
 @app.get("/forecasts/latest")
 def latest_forecast():
     current = current_hour_id()
-    row = store.get(current)
+    row = store.get(current) or store.latest()
     if not row:
-        last = store.latest()
         raise HTTPException(
             status_code=404,
             detail={
-                "reason": "no live forecast for the current hour",
+                "reason": "no forecasts stored yet",
                 "currentHourId": current,
-                "lastHourId": int(last["hour_id"]) if last else None,
             },
         )
     return row_to_api(row, warmup_complete=_warmup(), now_hour=current)
@@ -180,7 +178,7 @@ def user_portfolio(address: str):
         raise HTTPException(status_code=400, detail="invalid address")
     payload = snapshot(address)
     current = current_hour_id()
-    live = store.get(current)
+    live = store.get(current) or store.latest()
     payload["forecast"] = row_to_api(live, warmup_complete=_warmup(), now_hour=current) if live else None
     return payload
 
