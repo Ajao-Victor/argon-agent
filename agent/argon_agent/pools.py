@@ -420,8 +420,29 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
 def list_pools() -> dict:
     now = time.time()
     cached = _SNAPSHOT.get("body")
-    if cached and now - float(_SNAPSHOT["ts"]) < _SNAPSHOT_TTL:
+    age = now - float(_SNAPSHOT["ts"] or 0)
+    if cached and age < _SNAPSHOT_TTL:
         return cached
+    if cached:
+        if not getattr(list_pools, "_refreshing", False):
+            list_pools._refreshing = True  # type: ignore[attr-defined]
+
+            def _refresh() -> None:
+                try:
+                    _SNAPSHOT["body"] = _build_pools()
+                    _SNAPSHOT["ts"] = time.time()
+                finally:
+                    list_pools._refreshing = False  # type: ignore[attr-defined]
+
+            threading.Thread(target=_refresh, name="pools-refresh", daemon=True).start()
+        return cached
+    body = _build_pools()
+    _SNAPSHOT["ts"] = now
+    _SNAPSHOT["body"] = body
+    return body
+
+
+def _build_pools() -> dict:
     warm_apr_cache()
     try:
         eth_usd8 = coinbase_eth_usd8()
@@ -457,6 +478,4 @@ def list_pools() -> dict:
         "selectOneChain": True,
         "pools": items,
     }
-    _SNAPSHOT["ts"] = now
-    _SNAPSHOT["body"] = body
     return body
