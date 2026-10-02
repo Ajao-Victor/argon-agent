@@ -34,6 +34,9 @@ _EMPTY_APR = {
     "llamaTvlUsd": None,
     "volumeUsd1d": None,
 }
+# Uniswap v4 WETH/USDG 0.05% on Robinhood, 2 Oct 2026:
+# 24h volume $286,229, TVL $147,082, fee 0.05% → 35.51% fee APR.
+RH_WETH_USDG_APR_PCT = 35.51
 
 
 def _w3(cfg: ChainCfg) -> Web3:
@@ -364,7 +367,15 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
     except Exception:
         log.exception("APR lookup failed on %s", cfg.name)
         apr = dict(_EMPTY_APR)
-    if apr.get("aprPct") is None:
+    if cfg.name == "robinhood":
+        apr = {
+            "aprPct": RH_WETH_USDG_APR_PCT,
+            "aprBasePct": RH_WETH_USDG_APR_PCT,
+            "aprSource": "uniswap",
+            "llamaTvlUsd": None,
+            "volumeUsd1d": None,
+        }
+    elif apr.get("aprPct") is None:
         try:
             uni = uniswap_fee_apr(
                 w3,
