@@ -235,15 +235,13 @@ class Store:
             cur = c.cursor()
             cur.execute(self._q(sql), tuple(row[c] for c in cols))
 
-    def save_gate_decision(self, address: str, action: str, hour_id: int, in_position: bool) -> None:
+    def save_gate_decisions(self, rows: list[tuple]) -> None:
+        if not rows:
+            return
+        sql = "UPDATE signer_gates SET last_action = %s, last_hour_id = %s, in_position = %s WHERE address = %s"
         with self.conn() as c:
             cur = c.cursor()
-            cur.execute(
-                self._q(
-                    "UPDATE signer_gates SET last_action = %s, last_hour_id = %s, in_position = %s WHERE address = %s"
-                ),
-                (action, hour_id, 1 if in_position else 0, address),
-            )
+            cur.executemany(self._q(sql), rows)
 
 
 def _as_dict(row: Any, cur: Any) -> dict:

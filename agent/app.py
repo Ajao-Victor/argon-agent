@@ -232,6 +232,28 @@ def get_gate(address: str):
     return _gate_public(row)
 
 
+def _depositor(address: str) -> bool:
+    from web3 import Web3
+
+    from argon_agent.config import VAULT, chains
+
+    for cfg in chains():
+        if not cfg.enabled:
+            continue
+        try:
+            w3 = Web3(Web3.HTTPProvider(cfg.rpc, request_kwargs={"timeout": 8}))
+            bal = int(
+                w3.eth.contract(address=Web3.to_checksum_address(VAULT), abi=[{"inputs": [{"name": "", "type": "address"}], "name": "shareBalance", "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"}]).functions.shareBalance(
+                    Web3.to_checksum_address(address)
+                ).call()
+            )
+            if bal > 0:
+                return True
+        except Exception:
+            log.exception("shareBalance read failed on %s", cfg.name)
+    return False
+
+
 @app.post("/gates")
 def set_gate(body: GateRequest):
     from datetime import datetime, timezone
@@ -264,6 +286,8 @@ def set_gate(body: GateRequest):
     existing = store.get_gate(address)
     if existing and int(body.issuedAt) <= int(existing["issued_at"]):
         raise HTTPException(status_code=409, detail="a newer gate is already stored for this signer")
+    if not _depositor(address):
+        raise HTTPException(status_code=403, detail="gate can be saved only after this wallet has vault shares")
     store.save_gate(
         {
             "address": address,

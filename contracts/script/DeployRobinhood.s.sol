@@ -21,8 +21,7 @@ contract DeployRobinhood is DeployBase {
 
         vm.startBroadcast(pk);
         InferenceRegistry reg = new InferenceRegistry(deployer, keeper, modelId);
-        // Feed heartbeat is ~24h. 25h avoids deposit reverts between updates. Sequencer stays unset.
-        ChainlinkEthOracle oracle = new ChainlinkEthOracle(ethUsd, sequencer, 90_000);
+        ChainlinkEthOracle oracle = new ChainlinkEthOracle(ethUsd, sequencer, address(0), 90_000);
         ArgonVault vault =
             new ArgonVault(deployer, keeper, address(reg), address(oracle), ChainConfig.RH_WETH, ChainConfig.RH_USDG, 6);
         vault.setDepositFeeBps(60);

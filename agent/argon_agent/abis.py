@@ -128,6 +128,27 @@ VAULT_ABI = [
         "type": "function",
     },
     {
+        "inputs": [],
+        "name": "gate1hBps",
+        "outputs": [{"name": "", "type": "uint16"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "gate2hBps",
+        "outputs": [{"name": "", "type": "uint16"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "gate8hBps",
+        "outputs": [{"name": "", "type": "uint16"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
         "inputs": [
             {"name": "user", "type": "address"},
             {"name": "token", "type": "address"},

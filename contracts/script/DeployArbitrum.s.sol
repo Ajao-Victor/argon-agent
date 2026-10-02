@@ -18,7 +18,8 @@ contract DeployArbitrum is DeployBase {
 
         vm.startBroadcast(pk);
         InferenceRegistry reg = new InferenceRegistry(deployer, keeper, modelId);
-        ChainlinkEthOracle oracle = new ChainlinkEthOracle(ChainConfig.ARB_ETH_USD, ChainConfig.ARB_SEQUENCER, 3600);
+        ChainlinkEthOracle oracle =
+            new ChainlinkEthOracle(ChainConfig.ARB_ETH_USD, ChainConfig.ARB_SEQUENCER, ChainConfig.ARB_USDC_USD, 90_000);
         ArgonVault vault = new ArgonVault(
             deployer, keeper, address(reg), address(oracle), ChainConfig.ARB_WETH, ChainConfig.ARB_USDC, 6
         );

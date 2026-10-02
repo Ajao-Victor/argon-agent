@@ -76,6 +76,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     error PoolConfigured();
     error BadAdapter();
     error BadParam();
+    error EmergencyNeedsConsent();
     error SpotDeviation(uint256 spotUsd8, uint256 oracleUsd8);
     error BadRange();
 
@@ -88,6 +89,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     event Withdrawn(address indexed user, address indexed token, uint256 amount, uint256 shares);
     event Rebalanced(uint64 indexed hourId, uint8 indexed poolId, Action action, bytes32 forecastHash);
     event DepositFeeSet(uint16 bps);
+    event RouterSet(address indexed router);
     event EmergencyIdleOnly(address indexed user, uint256 shares);
 
     modifier onlyKeeper() {
@@ -161,15 +163,9 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     function setRouter(address r) external onlyOwner {
-        if (router != address(0)) {
-            weth.approve(router, 0);
-            stable.approve(router, 0);
-        }
+        if (r != address(0) && r.code.length == 0) revert BadParam();
         router = r;
-        if (r != address(0)) {
-            weth.approve(r, type(uint256).max);
-            stable.approve(r, type(uint256).max);
-        }
+        emit RouterSet(r);
     }
 
     function _balanceInventory(uint24 fee) internal {
@@ -184,12 +180,17 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
         if (excessUsd8 * 100 < total) return; // < 1% imbalance: leave it
         address tin = sellWeth ? weth : stable;
         address tout = sellWeth ? stable : weth;
-        uint256 amountIn = sellWeth ? (excessUsd8 * 1e18) / p : (excessUsd8 * (10 ** uint256(stableDecimals))) / 1e8;
-        uint256 fairOut = sellWeth ? (excessUsd8 * (10 ** uint256(stableDecimals))) / 1e8 : (excessUsd8 * 1e18) / p;
-        uint256 minOut = (fairOut * (10_000 - maxSpotDevBps - fee / 100)) / 10_000;
+        uint256 stablePx = oracle.stableUsd8();
+        uint256 amountIn = sellWeth ? (excessUsd8 * 1e18) / p : (excessUsd8 * (10 ** uint256(stableDecimals))) / stablePx;
+        uint256 fairOut = sellWeth ? (excessUsd8 * (10 ** uint256(stableDecimals))) / stablePx : (excessUsd8 * 1e18) / p;
+        // Cap swap slack at 15 bps plus the pool fee. The spot check can stay wider.
+        uint256 slipBps = maxSpotDevBps > 15 ? 15 : maxSpotDevBps;
+        uint256 minOut = (fairOut * (10_000 - slipBps - fee / 100)) / 10_000;
+        tin.approve(router, amountIn);
         (bool ok, bytes memory ret) = router.call(
             abi.encodeWithSelector(0x04e45aaf, tin, tout, fee, address(this), amountIn, minOut, uint160(0))
         );
+        tin.approve(router, 0);
         if (!ok) {
             assembly { revert(add(ret, 32), mload(ret)) }
         }
@@ -218,8 +219,6 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
             if (_poolIds.length >= 4) revert BadParam();
             _poolIds.push(poolId);
         }
-        a.approve(adapter, type(uint256).max);
-        b.approve(adapter, type(uint256).max);
         emit PoolSet(poolId, adapter, gated);
     }
 
@@ -241,6 +240,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
 
     function depositETH() external payable whenNotPaused nonReentrant {
         if (msg.value == 0) revert ZeroAmount();
+        _pokeFees();
         uint256 navBefore = _totalAssetsUsd8();
         IWETH(weth).deposit{value: msg.value}();
         _deposit(msg.sender, weth, msg.value, navBefore);
@@ -249,6 +249,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     function deposit(address token, uint256 amount) external whenNotPaused nonReentrant {
         if (token != weth && token != stable) revert InvalidToken();
         if (amount == 0) revert ZeroAmount();
+        _pokeFees();
         uint256 navBefore = _totalAssetsUsd8();
         token.pull(msg.sender, amount);
         _deposit(msg.sender, token, amount, navBefore);
@@ -266,30 +267,35 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     function withdraw(uint256 shares) external nonReentrant {
-        _withdraw(msg.sender, shares);
+        _withdraw(msg.sender, msg.sender, shares);
     }
 
-    /// [FIX L-emergency] if an adapter call reverts, the user may still leave with the idle share.
-    function emergencyWithdraw() external nonReentrant {
+    function withdrawTo(uint256 shares, address receiver) external nonReentrant {
+        if (receiver == address(0)) revert ZeroAddress();
+        _withdraw(msg.sender, receiver, shares);
+    }
+
+    /// @notice If `acceptLoss` is false, a failed LP exit reverts and the position is kept.
+    function emergencyWithdraw(bool acceptLoss) external nonReentrant {
         uint256 shares = shareBalance[msg.sender];
         if (shares == 0) revert ZeroShares();
         try this.selfWithdraw(msg.sender, shares) {}
         catch {
-            _payIdle(msg.sender, shares, 0, 0);
+            if (!acceptLoss || gasleft() < 60_000) revert EmergencyNeedsConsent();
+            _payIdle(msg.sender, msg.sender, shares, 0, 0);
             emit EmergencyIdleOnly(msg.sender, shares);
         }
     }
 
     function selfWithdraw(address user, uint256 shares) external {
         require(msg.sender == address(this));
-        _withdraw(user, shares);
+        _withdraw(user, user, shares);
     }
 
-    function _withdraw(address user, uint256 shares) internal {
+    function _withdraw(address owner, address receiver, uint256 shares) internal {
         if (shares == 0) revert ZeroAmount();
-        if (shareBalance[user] < shares) revert InsufficientShares();
+        if (shareBalance[owner] < shares) revert InsufficientShares();
         uint256 supply = totalShares;
-        // [FIX M-forced-flatten] fees to idle first, then remove only this user's slice of liquidity.
         uint256 lpA_weth;
         uint256 lpB_stable;
         for (uint256 i; i < _poolIds.length; i++) {
@@ -309,22 +315,21 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
                 }
             }
         }
-        _payIdle(user, shares, lpA_weth, lpB_stable);
+        _payIdle(owner, receiver, shares, lpA_weth, lpB_stable);
     }
 
-    /// idle (excluding the just-removed LP slice) is split pro-rata; the LP slice goes to the user whole.
-    function _payIdle(address user, uint256 shares, uint256 lpWeth, uint256 lpStable) internal {
+    function _payIdle(address owner, address receiver, uint256 shares, uint256 lpWeth, uint256 lpStable) internal {
         uint256 supply = totalShares;
         uint256 wethBal = IERC20(weth).balanceOf(address(this)) - lpWeth;
         uint256 stableBal = IERC20(stable).balanceOf(address(this)) - lpStable;
         uint256 wethOut = (wethBal * shares) / supply + lpWeth;
         uint256 stableOut = (stableBal * shares) / supply + lpStable;
-        shareBalance[user] -= shares;
+        shareBalance[owner] -= shares;
         totalShares = supply - shares;
-        if (wethOut != 0) weth.push(user, wethOut);
-        if (stableOut != 0) stable.push(user, stableOut);
-        emit Withdrawn(user, weth, wethOut, shares);
-        emit Withdrawn(user, stable, stableOut, shares);
+        if (wethOut != 0) weth.push(receiver, wethOut);
+        if (stableOut != 0) stable.push(receiver, stableOut);
+        emit Withdrawn(receiver, weth, wethOut, shares);
+        emit Withdrawn(receiver, stable, stableOut, shares);
     }
 
     function rebalance(
@@ -335,13 +340,13 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
         int24 tickUpper,
         uint256 amountAMin,
         uint256 amountBMin
-    ) external onlyKeeper whenNotPaused nonReentrant {
+    ) external onlyKeeper nonReentrant {
         Pool storage p = pools[poolId];
         if (!p.exists) revert UnknownPool();
         if (!p.gated) revert PoolNotGated();
         if (p.lastRebalanceHourId == hourId) revert AlreadyRebalanced();
         if (hourId != registry.latestHourId()) revert StaleHour();
-        if (hourId != uint64(block.timestamp / 3600)) revert StaleHour(); // [FIX M-hourId]
+        if (hourId != uint64(block.timestamp / 3600)) revert StaleHour();
 
         IInferenceRegistry.Forecast memory f = registry.getForecast(hourId);
         bool inPool = p.adapter.inPosition();
@@ -355,17 +360,29 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
         if (action != Action.HOLD && !warmupComplete()) revert Warmup();
 
         if (action == Action.ENTER) {
+            if (paused) revert Paused();
             if (p.lastExitHourId != 0 && hourId < p.lastExitHourId + ENTER_COOLDOWN_HOURS) revert Cooldown();
             oracle.assertHealthy();
-            _checkSpot(p.adapter, tickLower, tickUpper);
             _balanceInventory(p.adapter.fee());
-            p.adapter.enter(tickLower, tickUpper, amountAMin, amountBMin, block.timestamp);
+            _checkSpot(p.adapter, tickLower, tickUpper);
+            uint256 wBal = IERC20(weth).balanceOf(address(this));
+            uint256 sBal = IERC20(stable).balanceOf(address(this));
+            if (router == address(0) && (wBal == 0 || sBal == 0)) {
+                // One-sided idle stays in the vault instead of reverting the whole hour.
+            } else {
+                weth.approve(address(p.adapter), wBal);
+                stable.approve(address(p.adapter), sBal);
+                p.adapter.enter(tickLower, tickUpper, amountAMin, amountBMin, block.timestamp);
+                weth.approve(address(p.adapter), 0);
+                stable.approve(address(p.adapter), 0);
+            }
         } else if (action == Action.EXIT) {
             if (inPool) {
                 p.adapter.exit(amountAMin, amountBMin);
                 p.lastExitHourId = hourId;
             }
         } else {
+            if (paused) revert Paused();
             if (inPool) p.adapter.harvest();
         }
 
@@ -377,7 +394,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
         (uint160 sqrtP, int24 tick, address token0) = adapter.spot();
         if (!(lo < tick && tick < hi) || hi - lo > maxTickWidth) revert BadRange();
         uint256 spotUsd8 = spotPriceUsd8(sqrtP, token0);
-        uint256 o = oracle.ethUsd8();
+        uint256 o = _ethInStable8();
         uint256 diff = spotUsd8 > o ? spotUsd8 - o : o - spotUsd8;
         if (diff * 10_000 > o * maxSpotDevBps) revert SpotDeviation(spotUsd8, o);
     }
@@ -390,7 +407,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     function oracleSqrtPriceX96(address token0) public view returns (uint160) {
-        uint256 o = oracle.ethUsd8();
+        uint256 o = _ethInStable8();
         uint256 scale = 1e26 / (10 ** uint256(stableDecimals));
         uint256 priceX192 = token0 == weth
             ? FullMath.mulDiv(o, (10 ** uint256(stableDecimals)) << 96, 1e26) << 96
@@ -405,6 +422,19 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
         while (y < z) {
             z = y;
             y = (x / y + y) >> 1;
+        }
+    }
+
+    function _ethInStable8() internal view returns (uint256) {
+        uint256 stablePx = oracle.stableUsd8();
+        if (stablePx == 0) revert BadParam();
+        return (oracle.ethUsd8() * 1e8) / stablePx;
+    }
+
+    function _pokeFees() internal {
+        for (uint256 i; i < _poolIds.length; i++) {
+            Pool storage p = pools[_poolIds[i]];
+            if (p.adapter.inPosition()) p.adapter.harvest();
         }
     }
 
@@ -432,7 +462,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
             return (amount * oracle.ethUsd8()) / 1e18;
         }
         if (token == stable) {
-            return (amount * 1e8) / (10 ** uint256(stableDecimals));
+            return (amount * oracle.stableUsd8()) / (10 ** uint256(stableDecimals));
         }
         return 0;
     }

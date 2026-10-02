@@ -10,6 +10,7 @@ library ChainConfig {
     address constant ARB_USDC = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address constant ARB_NPM = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
     address constant ARB_ETH_USD = 0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612;
+    address constant ARB_USDC_USD = 0x50834F3163758fcC1df9973b6e91f0F0F0434aD3;
     address constant ARB_SEQUENCER = 0xFdB631F5EE196F0ed6FAa767959853A9F217697D;
     uint24 constant ARB_FEE = 500;
     uint8 constant ARB_POOL_ID = 1;

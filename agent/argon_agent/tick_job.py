@@ -27,6 +27,7 @@ INFER_RETRY_SECS = 12
 def _apply_signer_gates(
     store: Store, hour_id: int, pct1h_bps: int, pct2h_bps: int, pct8h_bps: int, warmup_complete: bool
 ) -> None:
+    rows = []
     for gate in store.list_gates():
         action, in_position = user_action(
             pct1h_bps,
@@ -36,8 +37,9 @@ def _apply_signer_gates(
             in_position=bool(gate.get("in_position")),
             warmup_complete=warmup_complete,
         )
-        store.save_gate_decision(str(gate["address"]), action, hour_id, in_position)
+        rows.append((action, hour_id, 1 if in_position else 0, str(gate["address"])))
         log.info("signer %s hour %s action=%s in=%s", gate["address"], hour_id, action, in_position)
+    store.save_gate_decisions(rows)
 
 
 def _infer_live(hour_id: int):
@@ -173,7 +175,6 @@ def run_hour(store: Store | None = None) -> dict:
         pct1h_bps, pct2h_bps, pct8h_bps, in_pool=in_pool, warmup_complete=warmup_complete
     )
     action = action_name(action_code, warmup_complete)
-    _apply_signer_gates(store, hour_id, pct1h_bps, pct2h_bps, pct8h_bps, warmup_complete)
 
     store.upsert(
         {
@@ -227,6 +228,10 @@ def run_hour(store: Store | None = None) -> dict:
         pool_status_arb=chain_result["pool_status"].get("arbitrum"),
         pool_status_rh=chain_result["pool_status"].get("robinhood"),
     )
+    try:
+        _apply_signer_gates(store, hour_id, pct1h_bps, pct2h_bps, pct8h_bps, warmup_complete)
+    except Exception:
+        log.exception("signer gate update failed after keeper legs")
     row = store.get(hour_id)
     assert row is not None
     if _chain_incomplete(row):

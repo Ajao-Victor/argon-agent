@@ -53,6 +53,19 @@ class ChainClient:
             # [FIX] never guess: an unknown state must not produce an ENTER decision
             return int(self.vault.functions.poolStatus(self.cfg.pool_id).call()) == 1
 
+    def vault_gates(self) -> tuple[int, int, int]:
+        from argon_agent.config import GATE_1H_BPS, GATE_2H_BPS, GATE_8H_BPS
+
+        try:
+            return (
+                int(self.vault.functions.gate1hBps().call()),
+                int(self.vault.functions.gate2hBps().call()),
+                int(self.vault.functions.gate8hBps().call()),
+            )
+        except Exception:
+            log.warning("reading on-chain gates failed on %s; using env gates", self.cfg.name)
+            return GATE_1H_BPS, GATE_2H_BPS, GATE_8H_BPS
+
     def onchain_warmup_complete(self) -> bool | None:
         try:
             return bool(self.registry.functions.warmupComplete().call())
@@ -228,8 +241,16 @@ def execute_hour(
             result["submit"][c.cfg.name] = f"error:{exc}"
         try:
             if warmup_complete:
+                g1, g2, g8 = c.vault_gates()
                 chain_action = allowed_action(
-                    pct1h_bps, pct2h_bps, pct8h_bps, in_pool=c.in_pool(), warmup_complete=True
+                    pct1h_bps,
+                    pct2h_bps,
+                    pct8h_bps,
+                    in_pool=c.in_pool(),
+                    warmup_complete=True,
+                    gate1h=g1,
+                    gate2h=g2,
+                    gate8h=g8,
                 )
                 rtx = c.rebalance(hour_id, chain_action)
                 result["rebalance"][c.cfg.name] = rtx

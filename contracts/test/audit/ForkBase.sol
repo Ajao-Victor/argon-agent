@@ -37,7 +37,7 @@ abstract contract ForkBase is Test {
     function _setUpFork() internal {
         vm.createSelectFork("https://arb1.arbitrum.io/rpc");
         reg = new InferenceRegistry(address(this), keeper, modelId);
-        oracle = new ChainlinkEthOracle(FEED, SEQ, 2 days);
+        oracle = new ChainlinkEthOracle(FEED, SEQ, address(0), 2 days);
         vault = new ArgonVault(address(this), keeper, address(reg), address(oracle), WETH, USDC, 6);
         adapter = new UniswapV3Adapter(address(vault), NPM, WETH, USDC, 500);
         vault.setPool(1, address(adapter), true);

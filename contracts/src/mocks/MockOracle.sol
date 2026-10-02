@@ -21,6 +21,10 @@ contract MockOracle is IEthUsdOracle {
         return price;
     }
 
+    function stableUsd8() external view returns (uint256) {
+        return 1e8;
+    }
+
     function assertHealthy() external view {
         if (!healthy) revert Unhealthy();
     }
