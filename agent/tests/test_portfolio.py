@@ -25,3 +25,22 @@ def test_uniswap_fee_apr_from_daily_volume():
     assert apr is not None
     assert abs(apr - 18.25) < 1e-9
     assert fee_apr_pct(100, 0, 500) is None
+
+
+def test_uniswap_swap_volume_uses_one_side():
+    from argon_agent.accounting import swap_volume_usd
+
+    # token0 is WETH. 0.01 WETH at $3000 = $30. Opposite leg is ignored so volume is not doubled.
+    weth = "0x0000000000000000000000000000000000000001"
+    stable = "0x0000000000000000000000000000000000000002"
+    amount0 = (10**16).to_bytes(32, "big")
+    amount1 = (30 * 10**6).to_bytes(32, "big")
+    usd = swap_volume_usd(
+        amount0 + amount1,
+        token0=weth,
+        weth=weth,
+        stable=stable,
+        stable_decimals=6,
+        eth_usd8=3000 * 10**8,
+    )
+    assert abs(usd - 30.0) < 1e-6

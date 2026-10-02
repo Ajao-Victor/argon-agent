@@ -11,7 +11,7 @@ import requests
 from web3 import Web3
 
 from argon_agent.abis import ERC20_ABI, FACTORY_ABI, NPM_ABI, POOL_ABI, VAULT_ABI
-from argon_agent.accounting import usd8_from_stable, usd8_from_weth, usd8_to_float
+from argon_agent.accounting import fee_apr_pct, swap_volume_usd, usd8_from_stable, usd8_from_weth, usd8_to_float
 from argon_agent.config import VAULT, ChainCfg, chains
 
 log = logging.getLogger("argon.pools")
@@ -127,6 +127,86 @@ def match_apr(cfg: ChainCfg, pool: str) -> dict:
     return best or dict(_EMPTY_APR)
 
 
+_SWAP_TOPIC = Web3.keccak(text="Swap(address,address,int256,int256,uint160,uint128,int24)")
+_UNI_APR_CACHE: dict[str, tuple[float, dict]] = {}
+_UNI_APR_TTL = 600.0
+
+
+def uniswap_fee_apr(
+    w3: Web3,
+    pool: str,
+    *,
+    token0: str,
+    weth: str,
+    stable: str,
+    stable_decimals: int,
+    eth_usd8: int,
+    fee_ppm: int,
+    tvl_usd: float,
+) -> dict | None:
+    """Fee APR from the Uniswap v3 pool's own Swap logs, scaled to 24h."""
+    key = pool.lower()
+    cached = _UNI_APR_CACHE.get(key)
+    now = time.time()
+    if cached and now - cached[0] < _UNI_APR_TTL:
+        return cached[1]
+    if tvl_usd <= 0 or eth_usd8 <= 0:
+        return None
+    latest = int(w3.eth.block_number)
+    head = w3.eth.get_block(latest)
+    anchor = max(1, latest - 2_000)
+    older = w3.eth.get_block(anchor)
+    elapsed = max(int(head["timestamp"]) - int(older["timestamp"]), 1)
+    blocks_per_sec = 2_000 / elapsed
+    span_blocks = min(int(86_400 * blocks_per_sec), 24_000)
+    start_block = max(0, latest - span_blocks)
+    start_ts = int(w3.eth.get_block(start_block)["timestamp"])
+    covered = max(int(head["timestamp"]) - start_ts, 1)
+    volume = 0.0
+    step = 4_000
+    cursor = start_block
+    while cursor <= latest:
+        end = min(latest, cursor + step - 1)
+        try:
+            logs = w3.eth.get_logs(
+                {
+                    "address": Web3.to_checksum_address(pool),
+                    "fromBlock": cursor,
+                    "toBlock": end,
+                    "topics": [_SWAP_TOPIC],
+                }
+            )
+        except Exception:
+            log.exception("Uniswap swap logs failed %s %s-%s", pool, cursor, end)
+            logs = []
+        for entry in logs:
+            raw = entry["data"]
+            payload = bytes(raw)
+            volume += swap_volume_usd(
+                payload,
+                token0=token0,
+                weth=weth,
+                stable=stable,
+                stable_decimals=stable_decimals,
+                eth_usd8=eth_usd8,
+            )
+        cursor = end + 1
+    volume_24h = volume * (86_400 / covered)
+    apr = fee_apr_pct(volume_24h, tvl_usd, fee_ppm)
+    if apr is None:
+        return None
+    result = {
+        "aprPct": apr,
+        "aprBasePct": apr,
+        "aprSource": "uniswap",
+        "llamaTvlUsd": None,
+        "volumeUsd1d": volume_24h,
+    }
+    _UNI_APR_CACHE[key] = (now, result)
+    log.info("Uniswap fee APR %s %.2f%% on $%.0f 24h volume", pool, apr, volume_24h)
+    return result
+
+
 def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
     pair = "WETH/USDC" if cfg.name == "arbitrum" else "WETH/USDG"
     stable_symbol = "USDC" if cfg.name == "arbitrum" else "USDG"
@@ -159,6 +239,23 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
     except Exception:
         log.exception("APR lookup failed on %s", cfg.name)
         apr = dict(_EMPTY_APR)
+    if apr.get("aprPct") is None:
+        try:
+            uni = uniswap_fee_apr(
+                w3,
+                pool_addr,
+                token0=token0,
+                weth=weth,
+                stable=stable,
+                stable_decimals=decimals,
+                eth_usd8=eth_usd8,
+                fee_ppm=cfg.fee,
+                tvl_usd=usd8_to_float(tvl8),
+            )
+            if uni:
+                apr = uni
+        except Exception:
+            log.exception("Uniswap fee APR failed on %s", cfg.name)
     return {
         "id": cfg.name,
         "chainId": cfg.chain_id,
