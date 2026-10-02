@@ -97,21 +97,54 @@ _MODULE_ALIASES = {
 }
 
 
+# [FIX H-pickle] exact (module, name) allowlist observed in eth_8h_lgbm.pkl. Anything else is refused.
+_ALLOWED = {
+    ("collections", "OrderedDict"),
+    ("collections", "defaultdict"),
+    ("lightgbm.basic", "Booster"),
+    ("lightgbm.sklearn", "LGBMClassifier"),
+    ("lightgbm.sklearn", "LGBMRegressor"),
+    ("numpy", "dtype"),
+    ("numpy", "ndarray"),
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy.core.multiarray", "scalar"),
+    ("numpy.core.numeric", "_frombuffer"),
+    ("sklearn.preprocessing._data", "RobustScaler"),
+    ("sklearn.preprocessing._label", "LabelEncoder"),
+}
+
+
+class UnsafePickle(pickle.UnpicklingError):
+    pass
+
+
 class _ColabUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
-        if name == "DirectionalLightGBM":
+        if name == "DirectionalLightGBM" and module in ("__main__", __name__):
             return DirectionalLightGBM
         module = _MODULE_ALIASES.get(module, module)
         if module.startswith("numpy._core"):
             module = "numpy.core" + module[len("numpy._core") :]
-        try:
-            return super().find_class(module, name)
-        except (AttributeError, ModuleNotFoundError):
-            if name == "DirectionalLightGBM":
-                return DirectionalLightGBM
-            raise
+        if (module, name) not in _ALLOWED:
+            raise UnsafePickle(f"refusing to load {module}.{name} from model pickle")
+        return super().find_class(module, name)
 
 
-def load_bundle(path: Path) -> dict:
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_bundle(path: Path, expected_sha256: str | None = None) -> dict:
+    import os
+
+    expected = (expected_sha256 or os.getenv("MODEL_8H_SHA256") or "").strip().lower()
+    if expected and _sha256(path) != expected:
+        raise UnsafePickle(f"model pickle hash mismatch for {path}")
     with open(path, "rb") as f:
         return _ColabUnpickler(f).load()

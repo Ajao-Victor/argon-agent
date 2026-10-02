@@ -18,6 +18,7 @@ contract InferenceRegistryTest is Test {
     }
 
     function testSubmitAndRead() public {
+        vm.warp(1000 * 3600);
         vm.prank(keeper);
         reg.submit(1000, -40, -110, -150, _hash(1000, -40, -110, -150));
         InferenceRegistry.Forecast memory f = reg.getForecast(1000);
@@ -28,12 +29,14 @@ contract InferenceRegistryTest is Test {
     }
 
     function testRejectBadHash() public {
+        vm.warp(1000 * 3600);
         vm.prank(keeper);
         vm.expectRevert(InferenceRegistry.HashMismatch.selector);
         reg.submit(1000, -40, -110, -150, bytes32(uint256(1)));
     }
 
     function testRejectNonMonotonic() public {
+        vm.warp(1000 * 3600);
         vm.startPrank(keeper);
         reg.submit(1000, 1, 1, 1, _hash(1000, 1, 1, 1));
         vm.expectRevert(InferenceRegistry.HourNotMonotonic.selector);
@@ -45,6 +48,7 @@ contract InferenceRegistryTest is Test {
         vm.startPrank(keeper);
         for (uint64 i = 0; i < 9; i++) {
             int256 x = int256(uint256(i));
+            vm.warp((1000 + uint256(i)) * 3600);
             reg.submit(1000 + i, x, x, x, _hash(1000 + i, x, x, x));
         }
         vm.stopPrank();
@@ -53,6 +57,7 @@ contract InferenceRegistryTest is Test {
     }
 
     function testComputeHashMatchesSubmit() public {
+        vm.warp(1000 * 3600);
         bytes32 h = reg.computeHash(1000, -40, -110, -150);
         assertEq(h, _hash(1000, -40, -110, -150));
         vm.prank(keeper);

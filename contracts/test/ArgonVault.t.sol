@@ -28,6 +28,8 @@ contract ArgonVaultTest is Test {
         vault = new ArgonVault(address(this), keeper, address(reg), address(oracle), address(weth), address(usdc), 6);
         adapter = new MockPoolAdapter(address(weth), address(usdc));
         adapter.setVault(address(vault));
+        // [FIX-SIM] mock pool spot == mock oracle (2000 USD), tick 0 inside the tests' [-60,60] range
+        adapter.setSpot(address(weth) < address(usdc) ? uint160(3543191142285914327220224) : uint160(1771595571142957166518320255467520), 0);
         vault.setPool(1, address(adapter), true);
 
         weth.mint(alice, 10 ether);
@@ -49,6 +51,7 @@ contract ArgonVaultTest is Test {
     }
 
     function _submit(uint64 hour, int256 a, int256 b, int256 c) internal {
+        vm.warp(uint256(hour) * 3600 + 60); // [FIX-SIM] registry now binds hourId to block.timestamp
         vm.prank(keeper);
         reg.submit(hour, a, b, c, _hash(hour, a, b, c));
     }

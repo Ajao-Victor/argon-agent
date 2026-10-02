@@ -14,21 +14,25 @@ contract MockPoolAdapter is IPoolAdapter {
     bool public inPosition;
     uint256 public principalA;
     uint256 public principalB;
+    uint160 public sqrtP;
+    int24 public tick;
 
     constructor(address tokenA_, address tokenB_) {
         tokenA = tokenA_;
         tokenB = tokenB_;
     }
 
-    function setVault(address v) external {
-        vault = v;
+    function setVault(address v) external { vault = v; }
+    function fee() external pure returns (uint24) { return 500; }
+    function setSpot(uint160 s, int24 t) external { sqrtP = s; tick = t; }
+    function spot() external view returns (uint160, int24, address) {
+        return (sqrtP, tick, tokenA < tokenB ? tokenA : tokenB);
     }
 
-    function amounts() external view returns (uint256, uint256) {
-        return (principalA, principalB);
-    }
+    function amounts() external view returns (uint256, uint256) { return (principalA, principalB); }
+    function valueAt(uint160) external view returns (uint256, uint256) { return (principalA, principalB); }
 
-    function enter(int24, int24, uint256, uint256) external {
+    function enter(int24, int24, uint256, uint256, uint256) external {
         require(msg.sender == vault, "not vault");
         require(!inPosition, "in");
         uint256 a = IERC20(tokenA).balanceOf(vault);
@@ -52,7 +56,15 @@ contract MockPoolAdapter is IPoolAdapter {
         if (b != 0) tokenB.push(vault, b);
     }
 
-    function harvest() external view {
+    function exitShare(uint256 num, uint256 den) external returns (uint256 a, uint256 b) {
         require(msg.sender == vault, "not vault");
+        a = principalA * num / den;
+        b = principalB * num / den;
+        principalA -= a;
+        principalB -= b;
+        if (a != 0) tokenA.push(vault, a);
+        if (b != 0) tokenB.push(vault, b);
     }
+
+    function harvest() external view { require(msg.sender == vault, "not vault"); }
 }

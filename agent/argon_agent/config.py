@@ -101,6 +101,10 @@ def uniswap_api_key() -> str:
 
 
 def keeper_key() -> str | None:
+    """Keeper key is for the clock dyno only. The public web process must not load it."""
+    dyno = os.getenv("DYNO", "")
+    if dyno.startswith("web"):
+        return None
     raw = (os.getenv("KEEPER_PRIVATE_KEY") or "").strip()
     if not raw:
         return None

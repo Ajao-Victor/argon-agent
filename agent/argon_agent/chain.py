@@ -50,11 +50,8 @@ class ChainClient:
         try:
             return bool(self.adapter.functions.inPosition().call())
         except Exception:
-            try:
-                return int(self.vault.functions.poolStatus(self.cfg.pool_id).call()) == 1
-            except Exception:
-                log.exception("pool status read failed on %s", self.cfg.name)
-                return False
+            # [FIX] never guess: an unknown state must not produce an ENTER decision
+            return int(self.vault.functions.poolStatus(self.cfg.pool_id).call()) == 1
 
     def onchain_warmup_complete(self) -> bool | None:
         try:
@@ -69,17 +66,15 @@ class ChainClient:
             return None
 
     def _send(self, fn) -> str:
-        nonce = self.w3.eth.get_transaction_count(self.account.address)
+        nonce = self.w3.eth.get_transaction_count(self.account.address, "pending")  # [FIX L-nonce]
         tx_fields = {
             "from": self.account.address,
             "nonce": nonce,
             "chainId": self.cfg.chain_id,
             "gas": 1_800_000,
         }
-        try:
-            tx_fields["gas"] = int(fn.estimate_gas({"from": self.account.address}) * 1.25)
-        except Exception:
-            pass
+        # [FIX L-blind-send] never broadcast a tx the node already says will revert
+        tx_fields["gas"] = int(fn.estimate_gas({"from": self.account.address}) * 1.25)
         tx = fn.build_transaction(tx_fields)
         try:
             latest = self.w3.eth.get_block("latest")
@@ -117,7 +112,7 @@ class ChainClient:
         count = int(self.registry.functions.forecastCount().call())
         if count != 0 and hour_id <= latest:
             log.info("%s already has hour %s (latest %s)", self.cfg.name, hour_id, latest)
-            return None
+            return f"already:{latest}" if hour_id == latest else None
         return self._send(
             self.registry.functions.submit(hour_id, pct1h_bps, pct2h_bps, pct8h_bps, forecast_hash)
         )
@@ -132,6 +127,7 @@ class ChainClient:
             tick_lower, tick_upper = current_range(
                 self.w3, self.cfg.npm, self.cfg.token_a, self.cfg.token_b, self.cfg.fee
             )
+            spot_guard(self.w3, self.vault, self.cfg)  # [FIX H-enter-sandwich] off-chain mirror of the on-chain check
         else:
             tick_lower, tick_upper = 0, 10
         return self._send(
@@ -139,6 +135,35 @@ class ChainClient:
                 hour_id, self.cfg.pool_id, action, tick_lower, tick_upper, 0, 0
             )
         )
+
+
+MAX_SPOT_DEV_BPS = 50
+
+
+def spot_guard(w3, vault, cfg: ChainCfg, max_dev_bps: int = MAX_SPOT_DEV_BPS) -> None:
+    """Refuse ENTER when the Uniswap spot is away from Chainlink (pool likely manipulated)."""
+    from argon_agent.abis import ORACLE_ABI, POOL_ABI, FACTORY_ABI, NPM_ABI
+
+    npm = w3.eth.contract(address=Web3.to_checksum_address(cfg.npm), abi=NPM_ABI)
+    factory = w3.eth.contract(address=Web3.to_checksum_address(npm.functions.factory().call()), abi=FACTORY_ABI)
+    pool_addr = factory.functions.getPool(
+        Web3.to_checksum_address(cfg.token_a), Web3.to_checksum_address(cfg.token_b), cfg.fee
+    ).call()
+    pool = w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=POOL_ABI)
+    sqrt_p = int(pool.functions.slot0().call()[0])
+    oracle = w3.eth.contract(address=Web3.to_checksum_address(vault.functions.oracle().call()), abi=ORACLE_ABI)
+    eth_usd8 = int(oracle.functions.ethUsd8().call())
+    spot = spot_usd8(sqrt_p, cfg.token_a, cfg.token_b, 6)
+    if abs(spot - eth_usd8) * 10_000 > eth_usd8 * max_dev_bps:
+        raise RuntimeError(f"{cfg.name} spot {spot} vs oracle {eth_usd8} outside {max_dev_bps} bps; skip ENTER")
+
+
+def spot_usd8(sqrt_price_x96: int, weth: str, stable: str, stable_decimals: int) -> int:
+    scale = 10**26 // 10**stable_decimals
+    weth_is_token0 = int(weth, 16) < int(stable, 16)
+    if weth_is_token0:
+        return sqrt_price_x96 * sqrt_price_x96 * scale >> 192
+    return (scale << 192) // (sqrt_price_x96 * sqrt_price_x96)
 
 
 def registry_forecast_count() -> int | None:
@@ -186,6 +211,9 @@ def execute_hour(
     action: int,
     warmup_complete: bool,
 ) -> dict[str, Any]:
+    """`action` is kept for the API row; each chain gets its own gate decision (FIX M-any-in-pool)."""
+    from argon_agent.policy import allowed_action
+
     result: dict[str, Any] = {
         "submit": {},
         "rebalance": {},
@@ -200,7 +228,10 @@ def execute_hour(
             result["submit"][c.cfg.name] = f"error:{exc}"
         try:
             if warmup_complete:
-                rtx = c.rebalance(hour_id, action)
+                chain_action = allowed_action(
+                    pct1h_bps, pct2h_bps, pct8h_bps, in_pool=c.in_pool(), warmup_complete=True
+                )
+                rtx = c.rebalance(hour_id, chain_action)
                 result["rebalance"][c.cfg.name] = rtx
             else:
                 result["rebalance"][c.cfg.name] = "warmup-skip"

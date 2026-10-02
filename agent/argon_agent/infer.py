@@ -50,6 +50,8 @@ def _ensure_pickle(horizon: str) -> Path | None:
         return None
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     log.info("Downloading %s pickle from MODEL_%s_URL", horizon, horizon.upper())
+    if not url.lower().startswith("https://"):
+        raise RuntimeError("MODEL_*_URL must be https")  # [FIX H-pickle]
     resp = requests.get(url, timeout=120)
     resp.raise_for_status()
     path.write_bytes(resp.content)

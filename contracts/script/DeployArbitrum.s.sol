@@ -22,6 +22,7 @@ contract DeployArbitrum is DeployBase {
         ArgonVault vault = new ArgonVault(
             deployer, keeper, address(reg), address(oracle), ChainConfig.ARB_WETH, ChainConfig.ARB_USDC, 6
         );
+        vault.setDepositFeeBps(10);
         UniswapV3Adapter adapter = new UniswapV3Adapter(
             address(vault), ChainConfig.ARB_NPM, ChainConfig.ARB_WETH, ChainConfig.ARB_USDC, ChainConfig.ARB_FEE
         );

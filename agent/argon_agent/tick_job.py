@@ -57,6 +57,50 @@ def _infer_live(hour_id: int):
     raise last_err
 
 
+def _chain_incomplete(row: dict) -> bool:
+    import os
+
+    if os.getenv("DRY_RUN", "false").lower() in ("1", "true", "yes"):
+        return False
+    if row.get("action") == "warmup":
+        return False
+    for key in ("tx_hash", "tx_hash_rh", "rebalance_tx", "rebalance_tx_rh"):
+        val = row.get(key)
+        if isinstance(val, str) and val.startswith("error:"):
+            return True
+    return False
+
+
+_RETRIES: dict[int, int] = {}
+MAX_CHAIN_RETRIES = 3
+
+
+def _retry_chain(store: Store, row: dict) -> dict:
+    from argon_agent import chain as chainmod
+    from argon_agent.hashing import forecast_hash as fh
+    from argon_agent.policy import pct_to_bps as tb
+
+    hour_id = int(row["hour_id"])
+    _RETRIES[hour_id] = _RETRIES.get(hour_id, 0) + 1
+    if _RETRIES[hour_id] > MAX_CHAIN_RETRIES:
+        log.error("hour %s keeper legs failed %s times; giving up until next hour", hour_id, MAX_CHAIN_RETRIES)
+        return row_to_api(row, warmup_complete=True)
+    p1, p2, p8 = tb(row["eth_pct_1h"]), tb(row["eth_pct_2h"]), tb(row["eth_pct_8h"])
+    live = chainmod.clients()
+    res = chainmod.execute_hour(live, hour_id, p1, p2, p8, fh(hour_id, p1, p2, p8), 0, True)
+    store.update(
+        hour_id,
+        tx_hash=res["submit"].get("arbitrum") or row.get("tx_hash"),
+        tx_hash_rh=res["submit"].get("robinhood") or row.get("tx_hash_rh"),
+        rebalance_tx=res["rebalance"].get("arbitrum"),
+        rebalance_tx_rh=res["rebalance"].get("robinhood"),
+    )
+    fresh = store.get(hour_id) or row
+    if _chain_incomplete(fresh):
+        raise RuntimeError(f"hour {hour_id} keeper legs still failing; clock will retry in 60s")
+    return row_to_api(fresh, warmup_complete=True)
+
+
 def run_hour(store: Store | None = None) -> dict:
     from argon_agent import chain as chainmod
 
@@ -64,10 +108,13 @@ def run_hour(store: Store | None = None) -> dict:
     store.ensure_schema()
     hour_id = current_hour_id()
     existing = store.get(hour_id)
-    if existing:
+    if existing and not _chain_incomplete(existing):
         log.info("hour %s already stored (live)", hour_id)
         warmup = store.count() >= WARMUP_SUBMITS
         return row_to_api(existing, warmup_complete=warmup)
+    if existing:
+        # [FIX M-missed-exit] the forecast is stored but a chain leg failed: retry the keeper legs only.
+        return _retry_chain(store, existing)
 
     prediction = _infer_live(hour_id)
     prior_1h = store.get(hour_id - 1)
@@ -182,6 +229,8 @@ def run_hour(store: Store | None = None) -> dict:
     )
     row = store.get(hour_id)
     assert row is not None
+    if _chain_incomplete(row):
+        raise RuntimeError(f"hour {hour_id} keeper leg failed; clock retries this hour in 60s")
     api = row_to_api(row, warmup_complete=warmup_complete)
     api["close"] = prediction.close
     log.info(

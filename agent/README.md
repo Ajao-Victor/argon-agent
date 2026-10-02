@@ -1,6 +1,6 @@
 # Argon agent
 
-Hourly ETH forecast service. This is the **only** process that loads `eth_8h_lgbm.pkl`, talks to Tiingo, writes Postgres, and signs keeper txs. The Vercel site is read-only against this API. User wallets never call `submit` or `rebalance`.
+Hourly ETH forecast service. This is the **only** process that loads `eth_8h_lgbm.pkl`, fetches Coinbase hourly candles, writes Postgres, and signs keeper txs. The Vercel site reads this API and asks the wallet to sign a gate. User wallets never call `submit` or `rebalance`.
 
 Live contracts (same addresses on Arbitrum `42161` and Robinhood `4663`):
 
@@ -13,16 +13,22 @@ Live contracts (same addresses on Arbitrum `42161` and Robinhood `4663`):
 Keeper / owner on both chains: `0x9642b6D1Db5D1A3B0A61a831099568bbCbC04D4E`.
 
 ```
-Tiingo + DIA ──► infer.py (8h LightGBM pickle)
-                      │
-                      ▼
-              dual-horizon gate (same math as DualHorizonGate.sol)
-                      │
-          ┌───────────┴────────────┐
-          ▼                        ▼
-   Postgres ──GET──► Vercel     keeper EOA
-   /forecasts                    submit(hourId, 1h, 2h, 8h, hash)
-                                 rebalance(pool 1 Arb, pool 4 RH)
+Coinbase hourly ETH-USD ──► infer.py (8h LightGBM pickle)
+                                  │
+                                  ▼
+                         predEthUsd8h from last closed close
+                                  │
+                                  ▼
+              remaining % from current price to every open target
+              1h = average slice of targets covering the next hour
+              2h = average slice of targets with ≥2h left
+              8h = this hour's target vs current close
+                                  │
+          ┌───────────────────────┴────────────────────────┐
+          ▼                                                ▼
+   Postgres ──GET──► Vercel                          keeper EOA
+   forecasts, pools, signer_gates                    submit + rebalance
+                                                     pool 1 Arb, pool 4 RH
 ```
 
 ## What you must add
@@ -33,7 +39,7 @@ These are **not** in git:
 2. **`KEEPER_PRIVATE_KEY`** — the EOA already set as `keeper` on the registry and vault. Fund it with ETH on **both** Arbitrum and Robinhood for gas.
 3. **`FRONTEND_ORIGIN`** — your Vercel production URL (preview `*.vercel.app` is already allowed).
 
-Optional later: `eth_1h_lgbm.pkl` and `eth_2h_lgbm.pkl` trained the same way as the 8h head. Until those exist, 1h and 2h are **persistence nowcasts** (last 1h / 2h realized ETH %). That is *not* `pred_8h / 8`. The 8h number always comes from LightGBM.
+The only model head is `eth_8h_lgbm.pkl`. 1h and 2h are not separate pickles and are not `pred_8h / 8`.
 
 ## Local run
 
@@ -60,7 +66,7 @@ Every UTC hour (`clock.py`):
 
 1. Fetch ~60 days of hourly ETH-USD from Coinbase (no API key); drop the in-progress hour. The last bar **must** be `hourId-1`. A previous-day bar fails the tick instead of being stamped on the current hour.
 2. Rebuild the training feature set; run the 8h pickle → predicted ETH **price** in 8h (`predEthUsd8h`) from the last closed hour’s close. Dashboard still shows the derived %.
-3. First hour of a streak: 1h/2h are persistence nowcasts. From the next hour, 1h/2h are **catch-up** vs that previously submitted 8h price path (what the agent uses to decide).
+3. Restate every stored 8h price that is still open as the percent remaining from the current close. `ethPct1h` is the average 1h slice of those targets. `ethPct2h` is the average 2h slice of targets with at least two hours left. `ethPct8h` is only this hour's new target versus the current close.
 4. Convert to signed bps (`-1.50%` → `-150`).
 5. `forecastHash = keccak256(abi.encode(hourId, pct1h, pct2h, pct8h, keccak256("eth-1-2-8h-v1")))`.
 6. Insert Postgres. Mark matured rows when `now_hour >= hour_id + 8`.
@@ -69,12 +75,13 @@ Every UTC hour (`clock.py`):
    - `EXIT` if `|1h| ≥ 1%` **or** `|2h| ≥ 2.5%`.
    - `ENTER` if idle and all three inside (`|8h| < 2%` as well).
    - `HOLD` if already in pool and not EXIT.
-8. Keeper `registry.submit(...)` then `vault.rebalance(hourId, poolId, action, ticks, 0, 0)`:
+8. For each stored signer, write that wallet's `enter` / `hold` / `exit` on its own `signer_gates` row. The shared vault still rebalances once, with the on-chain Balanced bands.
+9. Keeper `registry.submit(...)` then `vault.rebalance(hourId, poolId, action, ticks, 0, 0)` when `DRY_RUN` is off:
    - Arbitrum `poolId = 1` (WETH/USDC 500)
    - Robinhood `poolId = 4` (WETH/USDG 500)
-9. The vault **re-checks** the gate on-chain. If the keeper passes ENTER when the stored bps say EXIT, the tx reverts.
+10. The vault **re-checks** the gate on-chain. If the keeper passes ENTER when the stored bps say EXIT, the tx reverts.
 
-The website never triggers this. It only `GET`s stored rows.
+The website does not call `submit` or `rebalance`. It reads forecasts and pools, and posts a signed gate.
 
 ## REST the frontend calls
 
@@ -87,8 +94,21 @@ Base URL: `https://<app>.herokuapp.com` → `NEXT_PUBLIC_AGENT_URL`.
 | `GET` | `/forecasts/latest` | Dashboard hero |
 | `GET` | `/forecasts?limit=24` | History |
 | `GET` | `/forecasts/:hourId` | Predicted vs realized |
+| `GET` | `/pools` | Arb and Robinhood TVL, ETH, APR |
+| `GET` | `/gates/:address` | That signer's stored gate |
+| `POST` | `/gates` | Save a signed gate |
 
-There is **no** public `POST /predict`. CORS is locked to `FRONTEND_ORIGIN` plus `https://*.vercel.app`.
+There is **no** public `POST /predict`. CORS allows `GET` and `POST` from `FRONTEND_ORIGIN` plus `https://*.vercel.app`.
+
+Pool cards bind `aprPct`, `poolTvlUsd`, and `ethUsd`. Robinhood APR is the fixed Uniswap WETH/USDG figure `35.51`. Poll `/pools` about every 15 seconds. A missing `txHash` does not mean the forecast is missing; `DRY_RUN` leaves it null.
+
+Warmup on the dashboard uses `hoursUntilFirstDecision` from `/status` (stored inferences). `onchainForecastCount` stays 0 until live submits.
+
+Signer gate message, signed with `personal_sign`:
+
+`argon-gate:{addressLowercase}:{preset}:{topBps}:{bottomBps}:{issuedAtUnix}`
+
+Safe is `60/-60`, Balanced `100/-100`, Aggressive `200/-200`. Custom sends its own 1h top and bottom. `issuedAt` must be within two hours and newer than the row already stored.
 
 `GET /forecasts/latest` shape:
 
@@ -147,11 +167,11 @@ The GitHub repo is a monorepo. Root `Procfile` / `requirements.txt` point at `ag
 4. **Config vars** — Settings → Config Vars (never commit these):
 
 ```
-TIINGO_API_KEY
 KEEPER_PRIVATE_KEY
 DRY_RUN=true
 MODEL_ID=eth-1-2-8h-v1
 MODEL_8H_URL          # HTTPS file for eth_8h_lgbm.pkl, or git-add the pickle
+UNISWAP_API_KEY       # optional; x-api-key for Uniswap LP pool_info on Arbitrum
 FRONTEND_ORIGIN       # your Vercel URL; preview *.vercel.app is already allowed
 ```
 

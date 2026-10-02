@@ -33,6 +33,7 @@ contract InferenceRegistry is Ownable, IInferenceRegistry {
     }
 
     constructor(address initialOwner, address keeper_, bytes32 modelId_) Ownable(initialOwner) {
+        if (keeper_ == address(0)) revert ZeroAddress();
         keeper = keeper_;
         modelId = modelId_;
         emit KeeperSet(keeper_);
@@ -55,6 +56,8 @@ contract InferenceRegistry is Ownable, IInferenceRegistry {
         onlyKeeper
     {
         if (forecastCount != 0 && hourId <= latestHourId) revert HourNotMonotonic();
+        if (hourId != uint64(block.timestamp / 3600)) revert HourNotMonotonic(); // [FIX M-hourId] bind to wall clock
+        if (_abs(pct1hBps) > 10_000 || _abs(pct2hBps) > 10_000 || _abs(pct8hBps) > 10_000) revert HashMismatch(); // [FIX I-int-min]
         if (_forecasts[hourId].submitter != address(0)) revert AlreadySubmitted();
 
         bytes32 expected = keccak256(abi.encode(hourId, pct1hBps, pct2hBps, pct8hBps, modelId));
@@ -91,5 +94,9 @@ contract InferenceRegistry is Ownable, IInferenceRegistry {
         returns (bytes32)
     {
         return keccak256(abi.encode(hourId, pct1hBps, pct2hBps, pct8hBps, modelId));
+    }
+
+    function _abs(int256 x) private pure returns (uint256) {
+        return x == type(int256).min ? type(uint256).max : uint256(x >= 0 ? x : -x);
     }
 }
