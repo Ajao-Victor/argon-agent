@@ -8,13 +8,36 @@ import time
 from argon_agent.config import MODEL_ID_TEXT, WARMUP_SUBMITS
 from argon_agent.db import Store, now_iso
 from argon_agent.hashing import forecast_hash, hex_hash
-from argon_agent.policy import action_name, allowed_action, catchup_pct, path_expected_price, pct_to_bps
+from argon_agent.policy import (
+    action_name,
+    allowed_action,
+    average_open_slice,
+    pct_from_prices,
+    pct_to_bps,
+    user_action,
+)
 from argon_agent.serialize import current_hour_id, row_to_api
 
 log = logging.getLogger("argon.tick")
 
 INFER_ATTEMPTS = 8
 INFER_RETRY_SECS = 12
+
+
+def _apply_signer_gates(
+    store: Store, hour_id: int, pct1h_bps: int, pct2h_bps: int, pct8h_bps: int, warmup_complete: bool
+) -> None:
+    for gate in store.list_gates():
+        action, in_position = user_action(
+            pct1h_bps,
+            pct2h_bps,
+            pct8h_bps,
+            gate,
+            in_position=bool(gate.get("in_position")),
+            warmup_complete=warmup_complete,
+        )
+        store.save_gate_decision(str(gate["address"]), action, hour_id, in_position)
+        log.info("signer %s hour %s action=%s in=%s", gate["address"], hour_id, action, in_position)
 
 
 def _infer_live(hour_id: int):
@@ -48,39 +71,33 @@ def run_hour(store: Store | None = None) -> dict:
 
     prediction = _infer_live(hour_id)
     prior_1h = store.get(hour_id - 1)
-    prior_2h = store.get(hour_id - 2)
-    expected_1h = None
-    if prior_1h and prior_1h.get("pred_eth_usd_8h") and prior_1h.get("bar_close_usd"):
-        from argon_agent.infer import HorizonPred
+    open_calls: list[tuple[float, int]] = []
+    for row in store.list_recent(24):
+        target = row.get("pred_eth_usd_8h")
+        if target is None:
+            continue
+        remaining = int(row["target_hour_id"]) - hour_id
+        if remaining >= 1:
+            open_calls.append((float(target), remaining))
+    open_calls.append((float(prediction.pred_eth_usd_8h), 8))
+    averaged_1h = average_open_slice(open_calls, prediction.close, 1)
+    averaged_2h = average_open_slice(open_calls, prediction.close, 2)
+    from argon_agent.infer import HorizonPred
 
-        start = float(prior_1h["bar_close_usd"])
-        target = float(prior_1h["pred_eth_usd_8h"])
-        expected_1h = path_expected_price(start, target, 1)
-        prediction.eth_pct_1h = HorizonPred(
-            pct=catchup_pct(start, target, prediction.close, 1),
-            source="catchup",
-        )
-        log.info(
-            "hour %s 1h catch-up vs prior $%.2f path: expected $%.2f actual $%.2f",
-            hour_id,
-            target,
-            expected_1h,
-            prediction.close,
-        )
-    if prior_2h and prior_2h.get("pred_eth_usd_8h") and prior_2h.get("bar_close_usd"):
-        from argon_agent.infer import HorizonPred
-
-        start = float(prior_2h["bar_close_usd"])
-        target = float(prior_2h["pred_eth_usd_8h"])
-        prediction.eth_pct_2h = HorizonPred(
-            pct=catchup_pct(start, target, prediction.close, 2),
-            source="catchup",
-        )
+    if averaged_1h is not None:
+        prediction.eth_pct_1h = HorizonPred(pct=averaged_1h, source="residual")
+    if averaged_2h is not None:
+        prediction.eth_pct_2h = HorizonPred(pct=averaged_2h, source="residual")
+    prediction.eth_pct_8h = HorizonPred(
+        pct=pct_from_prices(prediction.close, prediction.pred_eth_usd_8h),
+        source="lgbm",
+    )
+    expected_1h = prediction.close * (1.0 + prediction.eth_pct_1h.pct / 100.0)
     if (
         prior_1h
         and int(prior_1h["hour_id"]) != hour_id
-        and float(prior_1h.get("eth_pct_8h") or 0) == prediction.eth_pct_8h.pct
-        and abs(float(prior_1h.get("pred_eth_usd_8h") or 0) - prediction.pred_eth_usd_8h) < 1e-9
+        and prior_1h.get("pred_eth_usd_8h") is not None
+        and abs(float(prior_1h["pred_eth_usd_8h"]) - prediction.pred_eth_usd_8h) < 1e-6
     ):
         raise RuntimeError(
             f"hour {hour_id} 8h predicted price ${prediction.pred_eth_usd_8h:.2f} "
@@ -109,6 +126,7 @@ def run_hour(store: Store | None = None) -> dict:
         pct1h_bps, pct2h_bps, pct8h_bps, in_pool=in_pool, warmup_complete=warmup_complete
     )
     action = action_name(action_code, warmup_complete)
+    _apply_signer_gates(store, hour_id, pct1h_bps, pct2h_bps, pct8h_bps, warmup_complete)
 
     store.upsert(
         {

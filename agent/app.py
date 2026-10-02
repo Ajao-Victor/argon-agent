@@ -7,6 +7,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
 from argon_agent.config import (
@@ -18,9 +19,10 @@ from argon_agent.config import (
     eight_h_loaded,
     frontend_origins,
 )
-from argon_agent.db import Store
+from argon_agent.db import Store, now_iso
 from argon_agent.pools import list_pools, warm_apr_cache
 from argon_agent.portfolio import snapshot
+from argon_agent.policy import gate_message, resolve_gate
 from argon_agent.serialize import current_hour_id, row_to_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -45,7 +47,7 @@ app.add_middleware(
     allow_origins=origins if origins != ["*"] else ["*"],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -190,3 +192,97 @@ def get_forecast(hour_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="unknown hourId")
     return row_to_api(row, warmup_complete=_warmup())
+
+
+class GateRequest(BaseModel):
+    address: str
+    preset: str
+    topBps: int = Field(default=100)
+    bottomBps: int = Field(default=-100)
+    issuedAt: int
+    signature: str
+
+
+def _gate_public(row: dict) -> dict:
+    return {
+        "address": row["address"],
+        "preset": row["preset"],
+        "top1hBps": int(row["top_1h_bps"]),
+        "bottom1hBps": int(row["bottom_1h_bps"]),
+        "top2hBps": int(row["top_2h_bps"]),
+        "bottom2hBps": int(row["bottom_2h_bps"]),
+        "top8hBps": int(row["top_8h_bps"]),
+        "bottom8hBps": int(row["bottom_8h_bps"]),
+        "inPosition": bool(row.get("in_position")),
+        "lastAction": row.get("last_action"),
+        "lastHourId": row.get("last_hour_id"),
+        "issuedAt": int(row["issued_at"]),
+    }
+
+
+@app.get("/gates/{address}")
+def get_gate(address: str):
+    from web3 import Web3
+
+    if not Web3.is_address(address):
+        raise HTTPException(status_code=400, detail="invalid address")
+    row = store.get_gate(Web3.to_checksum_address(address))
+    if not row:
+        raise HTTPException(status_code=404, detail="no gate stored for this signer")
+    return _gate_public(row)
+
+
+@app.post("/gates")
+def set_gate(body: GateRequest):
+    from datetime import datetime, timezone
+
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+    from web3 import Web3
+
+    if not Web3.is_address(body.address):
+        raise HTTPException(status_code=400, detail="invalid address")
+    address = Web3.to_checksum_address(body.address)
+    try:
+        resolved = resolve_gate(body.preset, body.topBps, body.bottomBps)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if resolved["preset"] != "custom" and (
+        body.topBps != resolved["top_1h_bps"] or body.bottomBps != resolved["bottom_1h_bps"]
+    ):
+        raise HTTPException(status_code=400, detail="preset does not match the signed gate values")
+    now = int(datetime.now(timezone.utc).timestamp())
+    if abs(now - int(body.issuedAt)) > 2 * 3600:
+        raise HTTPException(status_code=400, detail="gate signature is outside the 2 hour window")
+    message = gate_message(address, resolved["preset"], body.topBps, body.bottomBps, body.issuedAt)
+    try:
+        recovered = Account.recover_message(encode_defunct(text=message), signature=body.signature)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid signature") from exc
+    if recovered.lower() != address.lower():
+        raise HTTPException(status_code=400, detail="signature is not from this signer")
+    existing = store.get_gate(address)
+    if existing and int(body.issuedAt) <= int(existing["issued_at"]):
+        raise HTTPException(status_code=409, detail="a newer gate is already stored for this signer")
+    store.save_gate(
+        {
+            "address": address,
+            "preset": resolved["preset"],
+            "top_1h_bps": resolved["top_1h_bps"],
+            "bottom_1h_bps": resolved["bottom_1h_bps"],
+            "top_2h_bps": resolved["top_2h_bps"],
+            "bottom_2h_bps": resolved["bottom_2h_bps"],
+            "top_8h_bps": resolved["top_8h_bps"],
+            "bottom_8h_bps": resolved["bottom_8h_bps"],
+            "signature": body.signature,
+            "signed_message": message,
+            "issued_at": int(body.issuedAt),
+            "updated_at": now_iso(),
+            "in_position": int(existing["in_position"]) if existing else 0,
+            "last_action": existing.get("last_action") if existing else None,
+            "last_hour_id": existing.get("last_hour_id") if existing else None,
+        }
+    )
+    saved = store.get_gate(address)
+    assert saved is not None
+    return _gate_public(saved)

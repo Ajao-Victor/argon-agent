@@ -65,3 +65,33 @@ def test_next_hour_catchup_vs_previously_submitted_price():
     assert abs(catchup_pct(start, target, expected_1h, 1)) < 1e-9
     ahead = catchup_pct(start, target, expected_1h * 1.02, 1)
     assert ahead > 0
+
+
+def test_one_hour_slice_is_the_average_of_open_eight_hour_targets():
+    from argon_agent.policy import average_open_slice, implied_slice_pct
+
+    current = 2700.0
+    # Issued this hour: $2754 in 8h. Issued 7 hours ago: $2740 with 1h left.
+    calls = [(2754.0, 8), (2740.0, 1)]
+    fresh = implied_slice_pct(2754.0, current, 8, 1)
+    last = implied_slice_pct(2740.0, current, 1, 1)
+    averaged = average_open_slice(calls, current, 1)
+    assert averaged is not None
+    assert abs(averaged - (fresh + last) / 2) < 1e-9
+    # The matured target with 0 hours left is not part of the 1h average.
+    assert average_open_slice([(2754.0, 0)], current, 1) is None
+    two_hour = average_open_slice(calls, current, 2)
+    assert two_hour is not None
+    assert abs(two_hour - implied_slice_pct(2754.0, current, 8, 2)) < 1e-9
+
+
+def test_custom_gate_exit_when_price_is_above_the_user_top():
+    from argon_agent.policy import resolve_gate, user_action
+
+    gate = resolve_gate("custom", 80, -300)
+    action, in_position = user_action(120, 50, 40, gate, in_position=True, warmup_complete=True)
+    assert action == "exit"
+    assert in_position is False
+    safe = resolve_gate("safe", 60, -60)
+    assert safe["top_1h_bps"] == 60
+    assert safe["top_2h_bps"] == 120

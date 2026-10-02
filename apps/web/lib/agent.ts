@@ -12,8 +12,8 @@ export type Forecast = {
   ethPct1h: number;
   ethPct2h: number;
   ethPct8h: number;
-  ethPct1hSource: "lgbm" | "persistence" | "catchup";
-  ethPct2hSource: "lgbm" | "persistence" | "catchup";
+  ethPct1hSource: "lgbm" | "persistence" | "catchup" | "residual";
+  ethPct2hSource: "lgbm" | "persistence" | "catchup" | "residual";
   ethPct8hSource: "lgbm" | "persistence";
   spotUsd: number | null;
   modelId: string;

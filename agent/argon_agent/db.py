@@ -44,6 +44,23 @@ CREATE TABLE IF NOT EXISTS forecasts (
   expected_eth_usd_1h DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS forecasts_target_idx ON forecasts (target_hour_id);
+CREATE TABLE IF NOT EXISTS signer_gates (
+  address          TEXT PRIMARY KEY,
+  preset           TEXT NOT NULL,
+  top_1h_bps       INTEGER NOT NULL,
+  bottom_1h_bps    INTEGER NOT NULL,
+  top_2h_bps       INTEGER NOT NULL,
+  bottom_2h_bps    INTEGER NOT NULL,
+  top_8h_bps       INTEGER NOT NULL,
+  bottom_8h_bps    INTEGER NOT NULL,
+  signature        TEXT NOT NULL,
+  signed_message   TEXT NOT NULL,
+  issued_at        BIGINT NOT NULL,
+  updated_at       TIMESTAMPTZ NOT NULL,
+  in_position      INTEGER NOT NULL DEFAULT 0,
+  last_action      TEXT,
+  last_hour_id     BIGINT
+);
 """
 
 SQLITE_SCHEMA = PG_SCHEMA.replace("TIMESTAMPTZ", "TEXT").replace("DOUBLE PRECISION", "REAL")
@@ -183,6 +200,49 @@ class Store:
                 status="matured",
                 realized_pct_change=realized_pct,
                 realized_spot_usd=realized_spot,
+            )
+
+    def get_gate(self, address: str) -> dict | None:
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute(self._q("SELECT * FROM signer_gates WHERE address = %s"), (address,))
+            return _row(cur)
+
+    def list_gates(self) -> list[dict]:
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT * FROM signer_gates ORDER BY address")
+            rows = cur.fetchall()
+            return [_as_dict(r, cur) for r in rows]
+
+    def save_gate(self, row: dict) -> None:
+        address = row["address"]
+        existing = self.get_gate(address)
+        if existing and int(row["issued_at"]) <= int(existing["issued_at"]):
+            raise ValueError("stale gate signature")
+        cols = list(row.keys())
+        placeholders = ", ".join(["%s"] * len(cols))
+        colsql = ", ".join(cols)
+        if self.postgres:
+            updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != "address")
+            sql = (
+                f"INSERT INTO signer_gates ({colsql}) VALUES ({placeholders}) "
+                f"ON CONFLICT (address) DO UPDATE SET {updates}"
+            )
+        else:
+            sql = f"INSERT OR REPLACE INTO signer_gates ({colsql}) VALUES ({placeholders})"
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute(self._q(sql), tuple(row[c] for c in cols))
+
+    def save_gate_decision(self, address: str, action: str, hour_id: int, in_position: bool) -> None:
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                self._q(
+                    "UPDATE signer_gates SET last_action = %s, last_hour_id = %s, in_position = %s WHERE address = %s"
+                ),
+                (action, hour_id, 1 if in_position else 0, address),
             )
 
 
