@@ -12,7 +12,7 @@ from web3 import Web3
 
 from argon_agent.abis import ERC20_ABI, FACTORY_ABI, NPM_ABI, POOL_ABI, VAULT_ABI
 from argon_agent.accounting import fee_apr_pct, swap_volume_usd, usd8_from_stable, usd8_from_weth, usd8_to_float
-from argon_agent.config import VAULT, ChainCfg, chains, uniswap_api_key
+from argon_agent.config import ChainCfg, chains, uniswap_api_key
 
 log = logging.getLogger("argon.pools")
 
@@ -341,7 +341,7 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
     w3 = _w3(cfg)
     if not w3.is_connected():
         raise RuntimeError(f"{cfg.name} RPC not connected")
-    vault = w3.eth.contract(address=Web3.to_checksum_address(VAULT), abi=VAULT_ABI)
+    vault = w3.eth.contract(address=Web3.to_checksum_address(cfg.vault), abi=VAULT_ABI)
     weth = Web3.to_checksum_address(vault.functions.weth().call())
     stable = Web3.to_checksum_address(vault.functions.stable().call())
     decimals = int(vault.functions.stableDecimals().call())
@@ -399,7 +399,7 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
         "pair": pair,
         "feePercent": cfg.fee / 10_000.0,
         "uniswapFee": cfg.fee,
-        "vault": VAULT,
+        "vault": cfg.vault,
         "pool": pool_addr,
         "weth": weth,
         "stable": stable,

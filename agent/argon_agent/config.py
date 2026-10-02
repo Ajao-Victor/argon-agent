@@ -19,10 +19,13 @@ GATE_2H_BPS = int(os.getenv("GATE_2H_BPS", "250"))
 GATE_8H_BPS = int(os.getenv("GATE_8H_BPS", "200"))
 WARMUP_SUBMITS = 9
 
-# Live CREATE addresses (same on Arb and Robinhood).
-REGISTRY = os.getenv("REGISTRY_ADDRESS", "0xbAf00c0aCa440337d43495c7de661A0AC2E01e8f")
-VAULT = os.getenv("VAULT_ADDRESS", "0x9F844b4D1b28Be7413067f9d4fC08Bc276fd1C60")
-ADAPTER = os.getenv("ADAPTER_ADDRESS", "0xECCc4B8946D0DB206f977d3021544D0cD5Dc69D4")
+# Live addresses differ per chain. Override with ARB_/RH_ + VAULT_ADDRESS etc.
+ARB_REGISTRY = os.getenv("ARB_REGISTRY_ADDRESS", "0x16CFd132f8fBF67A31b207E54667C4aA4432e747")
+ARB_VAULT = os.getenv("ARB_VAULT_ADDRESS", "0x744e2dD4Ce32148C8a4bf65BC37824cc129086aF")
+ARB_ADAPTER = os.getenv("ARB_ADAPTER_ADDRESS", "0x83a424953c6b7a32e9bE1d1F26a47EcFe2Ff93DC")
+RH_REGISTRY = os.getenv("RH_REGISTRY_ADDRESS", "0xacB34bE584177C44740064bE249D2fe1582eD261")
+RH_VAULT = os.getenv("RH_VAULT_ADDRESS", "0xe8eA8f046152C36dC8c11a5434C31A1E2343f274")
+RH_ADAPTER = os.getenv("RH_ADAPTER_ADDRESS", "0x1D0bdfa3ab21C72cA6733d584811E79e019eB7C0")
 
 ARB_CHAIN_ID = 42161
 RH_CHAIN_ID = 4663
@@ -62,6 +65,9 @@ class ChainCfg:
     token_b: str
     fee: int
     enabled: bool
+    registry: str
+    vault: str
+    adapter: str
 
 
 def chains() -> list[ChainCfg]:
@@ -76,6 +82,9 @@ def chains() -> list[ChainCfg]:
             token_b=ARB_USDC,
             fee=ARB_FEE,
             enabled=_truthy("ENABLE_ARBITRUM", "true"),
+            registry=ARB_REGISTRY,
+            vault=ARB_VAULT,
+            adapter=ARB_ADAPTER,
         ),
         ChainCfg(
             name="robinhood",
@@ -87,6 +96,9 @@ def chains() -> list[ChainCfg]:
             token_b=RH_USDG,
             fee=RH_FEE,
             enabled=_truthy("ENABLE_ROBINHOOD", "true"),
+            registry=RH_REGISTRY,
+            vault=RH_VAULT,
+            adapter=RH_ADAPTER,
         ),
     ]
 

@@ -10,12 +10,9 @@ from web3 import Web3
 
 from argon_agent.abis import ADAPTER_ABI, REGISTRY_ABI, VAULT_ABI
 from argon_agent.config import (
-    ADAPTER,
     DRY_RUN,
     REBALANCE_ONCHAIN,
-    REGISTRY,
     SUBMIT_ONCHAIN,
-    VAULT,
     ChainCfg,
     chains,
     keeper_key,
@@ -33,11 +30,11 @@ class ChainClient:
         self.account = account
         self.w3 = Web3(Web3.HTTPProvider(cfg.rpc, request_kwargs={"timeout": 30}))
         self.registry = self.w3.eth.contract(
-            address=Web3.to_checksum_address(REGISTRY), abi=REGISTRY_ABI
+            address=Web3.to_checksum_address(cfg.registry), abi=REGISTRY_ABI
         )
-        self.vault = self.w3.eth.contract(address=Web3.to_checksum_address(VAULT), abi=VAULT_ABI)
+        self.vault = self.w3.eth.contract(address=Web3.to_checksum_address(cfg.vault), abi=VAULT_ABI)
         self.adapter = self.w3.eth.contract(
-            address=Web3.to_checksum_address(ADAPTER), abi=ADAPTER_ABI
+            address=Web3.to_checksum_address(cfg.adapter), abi=ADAPTER_ABI
         )
 
     def connected(self) -> bool:
@@ -186,7 +183,7 @@ def registry_forecast_count() -> int | None:
         return None
     try:
         w3 = Web3(Web3.HTTPProvider(cfgs[0].rpc, request_kwargs={"timeout": 20}))
-        reg = w3.eth.contract(address=Web3.to_checksum_address(REGISTRY), abi=REGISTRY_ABI)
+        reg = w3.eth.contract(address=Web3.to_checksum_address(cfgs[0].registry), abi=REGISTRY_ABI)
         return int(reg.functions.forecastCount().call())
     except Exception:
         log.exception("registry forecastCount read failed")

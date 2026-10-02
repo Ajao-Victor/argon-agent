@@ -9,7 +9,7 @@ from web3 import Web3
 
 from argon_agent.abis import ADAPTER_ABI, ERC20_ABI, ORACLE_ABI, VAULT_ABI
 from argon_agent.accounting import pro_rata, usd8_from_stable, usd8_from_weth, usd8_to_float
-from argon_agent.config import ADAPTER, VAULT, ChainCfg, chains
+from argon_agent.config import ChainCfg, chains
 
 log = logging.getLogger("argon.portfolio")
 
@@ -22,7 +22,7 @@ def read_chain(cfg: ChainCfg, user: str | None) -> dict:
     w3 = _w3(cfg)
     if not w3.is_connected():
         raise RuntimeError(f"{cfg.name} RPC not connected")
-    vault = w3.eth.contract(address=Web3.to_checksum_address(VAULT), abi=VAULT_ABI)
+    vault = w3.eth.contract(address=Web3.to_checksum_address(cfg.vault), abi=VAULT_ABI)
     weth = Web3.to_checksum_address(vault.functions.weth().call())
     stable = Web3.to_checksum_address(vault.functions.stable().call())
     decimals = int(vault.functions.stableDecimals().call())
@@ -53,7 +53,7 @@ def read_chain(cfg: ChainCfg, user: str | None) -> dict:
                     elif token.lower() == stable.lower():
                         lp_stable += amt
         else:
-            adapter = w3.eth.contract(address=Web3.to_checksum_address(ADAPTER), abi=ADAPTER_ABI)
+            adapter = w3.eth.contract(address=Web3.to_checksum_address(cfg.adapter), abi=ADAPTER_ABI)
             in_pool = bool(adapter.functions.inPosition().call())
     except Exception:
         log.exception("pool/adapter read failed on %s", cfg.name)
@@ -79,7 +79,7 @@ def read_chain(cfg: ChainCfg, user: str | None) -> dict:
     return {
         "name": cfg.name,
         "chainId": cfg.chain_id,
-        "vault": VAULT,
+        "vault": cfg.vault,
         "poolId": cfg.pool_id,
         "pair": pair,
         "inPool": in_pool,

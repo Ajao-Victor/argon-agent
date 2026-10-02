@@ -235,7 +235,7 @@ def get_gate(address: str):
 def _depositor(address: str) -> bool:
     from web3 import Web3
 
-    from argon_agent.config import VAULT, chains
+    from argon_agent.config import chains
 
     for cfg in chains():
         if not cfg.enabled:
@@ -243,7 +243,7 @@ def _depositor(address: str) -> bool:
         try:
             w3 = Web3(Web3.HTTPProvider(cfg.rpc, request_kwargs={"timeout": 8}))
             bal = int(
-                w3.eth.contract(address=Web3.to_checksum_address(VAULT), abi=[{"inputs": [{"name": "", "type": "address"}], "name": "shareBalance", "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"}]).functions.shareBalance(
+                w3.eth.contract(address=Web3.to_checksum_address(cfg.vault), abi=[{"inputs": [{"name": "", "type": "address"}], "name": "shareBalance", "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"}]).functions.shareBalance(
                     Web3.to_checksum_address(address)
                 ).call()
             )

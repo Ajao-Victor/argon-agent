@@ -150,7 +150,7 @@ contract FixValidate is ForkBase {
         vm.prank(keeper); vault.rebalance(hour, 1, ArgonVault.Action.ENTER, lo, hi, 0, 0);
         vm.mockCallRevert(address(adapter), abi.encodeWithSelector(IPoolAdapter.harvest.selector), "broken");
         { uint256 _s = vault.shareBalance(bob); vm.prank(bob); vm.expectRevert(); vault.withdraw(_s); }
-        vm.prank(bob); vault.emergencyWithdraw();
+        vm.prank(bob); vault.emergencyWithdraw(true);
         assertEq(vault.shareBalance(bob), 0);
     }
 }

@@ -2,13 +2,13 @@
 
 Hourly ETH forecast service. This is the **only** process that loads `eth_8h_lgbm.pkl`, fetches Coinbase hourly candles, writes Postgres, and signs keeper txs. The Vercel site reads this API and asks the wallet to sign a gate. User wallets never call `submit` or `rebalance`.
 
-Live contracts (same addresses on Arbitrum `42161` and Robinhood `4663`):
+Live contracts (addresses differ per chain: Arbitrum `42161`, Robinhood `4663`):
 
 | Contract | Address |
 |----------|---------|
-| InferenceRegistry | `0xbAf00c0aCa440337d43495c7de661A0AC2E01e8f` |
-| ArgonVault | `0x9F844b4D1b28Be7413067f9d4fC08Bc276fd1C60` |
-| UniswapV3Adapter | `0xECCc4B8946D0DB206f977d3021544D0cD5Dc69D4` |
+| InferenceRegistry | Arb `0x16CFd132f8fBF67A31b207E54667C4aA4432e747` · RH `0xacB34bE584177C44740064bE249D2fe1582eD261` |
+| ArgonVault | Arb `0x744e2dD4Ce32148C8a4bf65BC37824cc129086aF` · RH `0xe8eA8f046152C36dC8c11a5434C31A1E2343f274` |
+| UniswapV3Adapter | Arb `0x83a424953c6b7a32e9bE1d1F26a47EcFe2Ff93DC` · RH `0x1D0bdfa3ab21C72cA6733d584811E79e019eB7C0` |
 
 Keeper / owner on both chains: `0x9642b6D1Db5D1A3B0A61a831099568bbCbC04D4E`.
 
@@ -219,10 +219,10 @@ Heroku Scheduler (`0 * * * * python infer_once.py`) can replace the clock dyno i
 NEXT_PUBLIC_AGENT_URL=https://argon-agent-XXXX.herokuapp.com
 NEXT_PUBLIC_ARB_RPC=https://arb1.arbitrum.io/rpc
 NEXT_PUBLIC_RH_RPC=https://rpc.mainnet.chain.robinhood.com
-NEXT_PUBLIC_VAULT_ARB=0x9F844b4D1b28Be7413067f9d4fC08Bc276fd1C60
-NEXT_PUBLIC_REGISTRY_ARB=0xbAf00c0aCa440337d43495c7de661A0AC2E01e8f
-NEXT_PUBLIC_VAULT_RH=0x9F844b4D1b28Be7413067f9d4fC08Bc276fd1C60
-NEXT_PUBLIC_REGISTRY_RH=0xbAf00c0aCa440337d43495c7de661A0AC2E01e8f
+NEXT_PUBLIC_VAULT_ARB=0x744e2dD4Ce32148C8a4bf65BC37824cc129086aF
+NEXT_PUBLIC_REGISTRY_ARB=0x16CFd132f8fBF67A31b207E54667C4aA4432e747
+NEXT_PUBLIC_VAULT_RH=0xe8eA8f046152C36dC8c11a5434C31A1E2343f274
+NEXT_PUBLIC_REGISTRY_RH=0xacB34bE584177C44740064bE249D2fe1582eD261
 NEXT_PUBLIC_WALLETCONNECT_ID=
 ```
 
