@@ -95,6 +95,11 @@ def tiingo_api_key() -> str:
     return (os.getenv("TIINGO_API_KEY") or "").strip()
 
 
+def uniswap_api_key() -> str:
+    """x-api-key from the Uniswap developer dashboard. Used by /pools."""
+    return (os.getenv("UNISWAP_API_KEY") or "").strip()
+
+
 def keeper_key() -> str | None:
     raw = (os.getenv("KEEPER_PRIVATE_KEY") or "").strip()
     if not raw:

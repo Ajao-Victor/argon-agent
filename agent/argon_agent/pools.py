@@ -12,11 +12,14 @@ from web3 import Web3
 
 from argon_agent.abis import ERC20_ABI, FACTORY_ABI, NPM_ABI, POOL_ABI, VAULT_ABI
 from argon_agent.accounting import fee_apr_pct, swap_volume_usd, usd8_from_stable, usd8_from_weth, usd8_to_float
-from argon_agent.config import VAULT, ChainCfg, chains
+from argon_agent.config import VAULT, ChainCfg, chains, uniswap_api_key
 
 log = logging.getLogger("argon.pools")
 
+UNISWAP_POOL_INFO = "https://liquidity.api.uniswap.org/lp/pool_info"
 LLAMA_URL = "https://yields.llama.fi/pools"
+_UNISWAP_API_CHAINS = {1, 42161, 8453, 10, 137, 42220}
+_UNI_API_CACHE: dict[str, tuple[float, dict]] = {}
 COINBASE_TICKER = "https://api.exchange.coinbase.com/products/ETH-USD/ticker"
 _LLAMA_CACHE: dict = {"ts": 0.0, "rows": []}
 _LLAMA_TTL = 600.0
@@ -83,6 +86,81 @@ def warm_apr_cache() -> None:
 def llama_rows() -> list[dict]:
     warm_apr_cache()
     return list(_LLAMA_CACHE["rows"])
+
+
+def uniswap_pool_info(cfg: ChainCfg, pool: str) -> dict | None:
+    """Live Uniswap LP API snapshot. No APR field; TVL comes from pool reserves."""
+    key = uniswap_api_key()
+    if not key or cfg.chain_id not in _UNISWAP_API_CHAINS:
+        return None
+    cache_key = f"{cfg.chain_id}:{pool.lower()}"
+    cached = _UNI_API_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < 60:
+        return cached[1]
+    try:
+        resp = requests.post(
+            UNISWAP_POOL_INFO,
+            headers={"x-api-key": key, "Content-Type": "application/json", "Accept": "application/json"},
+            json={
+                "protocol": "V3",
+                "chainId": cfg.chain_id,
+                "poolReferences": [
+                    {
+                        "protocol": "V3",
+                        "chainId": cfg.chain_id,
+                        "poolAddress": pool,
+                        "referenceIdentifier": pool,
+                    }
+                ],
+            },
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            log.warning("Uniswap pool_info %s %s", resp.status_code, resp.text[:180])
+            return None
+        payload = resp.json()
+    except Exception:
+        log.exception("Uniswap pool_info failed on %s", cfg.name)
+        return None
+    rows = payload if isinstance(payload, list) else None
+    if rows is None and isinstance(payload, dict):
+        for field in ("pools", "poolInformation", "data", "result"):
+            if isinstance(payload.get(field), list):
+                rows = payload[field]
+                break
+        if rows is None and payload.get("poolReferenceIdentifier"):
+            rows = [payload]
+    if not rows:
+        return None
+    info = rows[0]
+    _UNI_API_CACHE[cache_key] = (time.time(), info)
+    return info
+
+
+def _apply_uniswap_api(card: dict, info: dict, weth: str, stable: str, eth_usd8: int) -> None:
+    addr_a = str(info.get("tokenAddressA") or "").lower()
+    addr_b = str(info.get("tokenAddressB") or "").lower()
+    try:
+        amount_a = int(info.get("tokenAReserves") or info.get("tokenAmountA") or 0)
+        amount_b = int(info.get("tokenBReserves") or info.get("tokenAmountB") or 0)
+    except (TypeError, ValueError):
+        return
+    dec_a = int(info.get("tokenDecimalsA") or (6 if addr_a == stable.lower() else 18))
+    dec_b = int(info.get("tokenDecimalsB") or (6 if addr_b == stable.lower() else 18))
+
+    def usd(addr: str, amount: int, decimals: int) -> float:
+        if addr == weth.lower():
+            return usd8_to_float(usd8_from_weth(amount, eth_usd8))
+        if addr == stable.lower():
+            return usd8_to_float(usd8_from_stable(amount, decimals))
+        return 0.0
+
+    tvl = usd(addr_a, amount_a, dec_a) + usd(addr_b, amount_b, dec_b)
+    if tvl > 0:
+        card["poolTvlUsd"] = tvl
+        card["tvlSource"] = "uniswap"
+    card["uniswapTick"] = info.get("currentTick")
+    card["uniswapLiquidity"] = info.get("poolLiquidity")
 
 
 def coinbase_eth_usd8() -> int:
@@ -303,7 +381,7 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
                 apr = uni
         except Exception:
             log.exception("Uniswap fee APR failed on %s", cfg.name)
-    return {
+    card = {
         "id": cfg.name,
         "chainId": cfg.chain_id,
         "poolId": cfg.pool_id,
@@ -322,6 +400,10 @@ def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
         "depositHint": f"Switch wallet to {cfg.name} then deposit WETH + {stable_symbol}",
         **apr,
     }
+    info = uniswap_pool_info(cfg, pool_addr)
+    if info:
+        _apply_uniswap_api(card, info, weth, stable, eth_usd8)
+    return card
 
 
 def list_pools() -> dict:
