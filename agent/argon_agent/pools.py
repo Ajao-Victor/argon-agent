@@ -144,6 +144,53 @@ def uniswap_fee_apr(
     fee_ppm: int,
     tvl_usd: float,
 ) -> dict | None:
+    """Return a cached Uniswap fee APR. The log scan runs off the page request."""
+    key = pool.lower()
+    cached = _UNI_APR_CACHE.get(key)
+    now = time.time()
+    if cached and now - cached[0] < _UNI_APR_TTL:
+        return cached[1]
+    if tvl_usd <= 0 or eth_usd8 <= 0:
+        return cached[1] if cached else None
+    if not getattr(uniswap_fee_apr, "_running", set()).__contains__(key):
+        running = getattr(uniswap_fee_apr, "_running", set())
+        running.add(key)
+        uniswap_fee_apr._running = running  # type: ignore[attr-defined]
+
+        def _run() -> None:
+            try:
+                fresh = _scan_uniswap_fee_apr(
+                    w3,
+                    pool,
+                    token0=token0,
+                    weth=weth,
+                    stable=stable,
+                    stable_decimals=stable_decimals,
+                    eth_usd8=eth_usd8,
+                    fee_ppm=fee_ppm,
+                    tvl_usd=tvl_usd,
+                )
+                if fresh:
+                    _UNI_APR_CACHE[key] = (time.time(), fresh)
+            finally:
+                uniswap_fee_apr._running.discard(key)  # type: ignore[attr-defined]
+
+        threading.Thread(target=_run, name=f"uni-apr-{key[:8]}", daemon=True).start()
+    return cached[1] if cached else None
+
+
+def _scan_uniswap_fee_apr(
+    w3: Web3,
+    pool: str,
+    *,
+    token0: str,
+    weth: str,
+    stable: str,
+    stable_decimals: int,
+    eth_usd8: int,
+    fee_ppm: int,
+    tvl_usd: float,
+) -> dict | None:
     """Fee APR from the Uniswap v3 pool's own Swap logs, scaled to 24h."""
     key = pool.lower()
     cached = _UNI_APR_CACHE.get(key)
