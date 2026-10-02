@@ -19,7 +19,7 @@ from argon_agent.config import (
     frontend_origins,
 )
 from argon_agent.db import Store
-from argon_agent.pools import list_pools
+from argon_agent.pools import list_pools, warm_apr_cache
 from argon_agent.portfolio import snapshot
 from argon_agent.serialize import current_hour_id, row_to_api
 
@@ -32,6 +32,7 @@ store = Store()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     store.ensure_schema()
+    warm_apr_cache()
     log.info("schema ready postgres=%s model8h=%s", store.postgres, eight_h_loaded())
     yield
 

@@ -3,26 +3,38 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 
 import requests
 from web3 import Web3
 
-from argon_agent.abis import ERC20_ABI, FACTORY_ABI, NPM_ABI, ORACLE_ABI, POOL_ABI, VAULT_ABI
+from argon_agent.abis import ERC20_ABI, FACTORY_ABI, NPM_ABI, POOL_ABI, VAULT_ABI
 from argon_agent.accounting import usd8_from_stable, usd8_from_weth, usd8_to_float
 from argon_agent.config import VAULT, ChainCfg, chains
 
 log = logging.getLogger("argon.pools")
 
 LLAMA_URL = "https://yields.llama.fi/pools"
+COINBASE_TICKER = "https://api.exchange.coinbase.com/products/ETH-USD/ticker"
 _LLAMA_CACHE: dict = {"ts": 0.0, "rows": []}
-_LLAMA_TTL = 300.0
+_LLAMA_TTL = 600.0
+_LLAMA_LOCK = threading.Lock()
+_SNAPSHOT: dict = {"ts": 0.0, "body": None}
+_SNAPSHOT_TTL = 15.0
 _CHAIN_LLAMA = {"arbitrum": "Arbitrum", "robinhood": "Robinhood"}
+_EMPTY_APR = {
+    "aprPct": None,
+    "aprBasePct": None,
+    "aprSource": "unavailable",
+    "llamaTvlUsd": None,
+    "volumeUsd1d": None,
+}
 
 
 def _w3(cfg: ChainCfg) -> Web3:
-    return Web3(Web3.HTTPProvider(cfg.rpc, request_kwargs={"timeout": 20}))
+    return Web3(Web3.HTTPProvider(cfg.rpc, request_kwargs={"timeout": 6}))
 
 
 def pool_address(w3: Web3, cfg: ChainCfg) -> str:
@@ -38,20 +50,45 @@ def pool_address(w3: Web3, cfg: ChainCfg) -> str:
     return Web3.to_checksum_address(addr)
 
 
-def llama_rows() -> list[dict]:
-    now = time.time()
-    if _LLAMA_CACHE["rows"] and now - _LLAMA_CACHE["ts"] < _LLAMA_TTL:
-        return _LLAMA_CACHE["rows"]
+def _refresh_llama() -> None:
     try:
-        resp = requests.get(LLAMA_URL, timeout=5)
+        resp = requests.get(LLAMA_URL, timeout=25)
         resp.raise_for_status()
         rows = resp.json().get("data") or []
-        _LLAMA_CACHE["ts"] = now
-        _LLAMA_CACHE["rows"] = rows
-        return rows
+        with _LLAMA_LOCK:
+            _LLAMA_CACHE["ts"] = time.time()
+            _LLAMA_CACHE["rows"] = rows
+        log.info("DefiLlama APR cache refreshed (%s rows)", len(rows))
     except Exception:
         log.exception("DefiLlama yields fetch failed")
-        return _LLAMA_CACHE["rows"]
+
+
+def warm_apr_cache() -> None:
+    """Refresh APR off the request path so /pools is not blocked on the yields file."""
+    with _LLAMA_LOCK:
+        fresh = bool(_LLAMA_CACHE["rows"]) and time.time() - _LLAMA_CACHE["ts"] < _LLAMA_TTL
+        if fresh or getattr(warm_apr_cache, "_running", False):
+            return
+        warm_apr_cache._running = True  # type: ignore[attr-defined]
+
+    def _run() -> None:
+        try:
+            _refresh_llama()
+        finally:
+            warm_apr_cache._running = False  # type: ignore[attr-defined]
+
+    threading.Thread(target=_run, name="llama-apr", daemon=True).start()
+
+
+def llama_rows() -> list[dict]:
+    warm_apr_cache()
+    return list(_LLAMA_CACHE["rows"])
+
+
+def coinbase_eth_usd8() -> int:
+    resp = requests.get(COINBASE_TICKER, headers={"User-Agent": "argon-agent"}, timeout=3)
+    resp.raise_for_status()
+    return int(float(resp.json()["price"]) * 1e8)
 
 
 def match_apr(cfg: ChainCfg, pool: str) -> dict:
@@ -87,10 +124,10 @@ def match_apr(cfg: ChainCfg, pool: str) -> dict:
                 return cand
             if best is None or (cand["llamaTvlUsd"] or 0) > (best["llamaTvlUsd"] or 0):
                 best = cand
-    return best or {"aprPct": None, "aprBasePct": None, "aprSource": "unavailable", "llamaTvlUsd": None, "volumeUsd1d": None}
+    return best or dict(_EMPTY_APR)
 
 
-def describe_pool(cfg: ChainCfg) -> dict:
+def describe_pool(cfg: ChainCfg, eth_usd8: int) -> dict:
     pair = "WETH/USDC" if cfg.name == "arbitrum" else "WETH/USDG"
     stable_symbol = "USDC" if cfg.name == "arbitrum" else "USDG"
     w3 = _w3(cfg)
@@ -100,8 +137,6 @@ def describe_pool(cfg: ChainCfg) -> dict:
     weth = Web3.to_checksum_address(vault.functions.weth().call())
     stable = Web3.to_checksum_address(vault.functions.stable().call())
     decimals = int(vault.functions.stableDecimals().call())
-    oracle = w3.eth.contract(address=Web3.to_checksum_address(vault.functions.oracle().call()), abi=ORACLE_ABI)
-    eth_usd8 = int(oracle.functions.ethUsd8().call())
     pool_addr = pool_address(w3, cfg)
     pool = w3.eth.contract(address=pool_addr, abi=POOL_ABI)
     token0 = Web3.to_checksum_address(pool.functions.token0().call())
@@ -122,8 +157,8 @@ def describe_pool(cfg: ChainCfg) -> dict:
     try:
         apr = match_apr(cfg, pool_addr)
     except Exception:
-        log.exception("APR lookup failed on %s; returning on-chain TVL", cfg.name)
-        apr = {"aprPct": None, "aprBasePct": None, "aprSource": "unavailable", "llamaTvlUsd": None, "volumeUsd1d": None}
+        log.exception("APR lookup failed on %s", cfg.name)
+        apr = dict(_EMPTY_APR)
     return {
         "id": cfg.name,
         "chainId": cfg.chain_id,
@@ -146,12 +181,22 @@ def describe_pool(cfg: ChainCfg) -> dict:
 
 
 def list_pools() -> dict:
+    now = time.time()
+    cached = _SNAPSHOT.get("body")
+    if cached and now - float(_SNAPSHOT["ts"]) < _SNAPSHOT_TTL:
+        return cached
+    warm_apr_cache()
+    try:
+        eth_usd8 = coinbase_eth_usd8()
+    except Exception:
+        log.exception("Coinbase ETH price failed")
+        eth_usd8 = 0
     items = []
     for cfg in chains():
         if not cfg.enabled:
             continue
         try:
-            items.append(describe_pool(cfg))
+            items.append(describe_pool(cfg, eth_usd8))
         except Exception as exc:
             log.exception("pool describe failed on %s", cfg.name)
             items.append(
@@ -169,9 +214,12 @@ def list_pools() -> dict:
                     "aprSource": "unavailable",
                 }
             )
-    return {
+    body = {
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "pollSeconds": 60,
+        "pollSeconds": 15,
         "selectOneChain": True,
         "pools": items,
     }
+    _SNAPSHOT["ts"] = now
+    _SNAPSHOT["body"] = body
+    return body
