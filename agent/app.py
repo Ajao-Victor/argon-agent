@@ -62,10 +62,10 @@ def _warmup_state() -> tuple[bool, int, int | None, int]:
         onchain_n = registry_forecast_count()
     except Exception:
         log.exception("on-chain forecastCount failed")
-    n = onchain_n if onchain_n is not None else db_n
-    complete = n >= WARMUP_SUBMITS
-    remaining = 0 if complete else max(0, WARMUP_SUBMITS - n)
-    return complete, remaining, onchain_n, db_n
+    # The progress bar counts stored inferences. onchainForecastCount stays 0 while DRY_RUN.
+    remaining = 0 if db_n >= WARMUP_SUBMITS else max(0, WARMUP_SUBMITS - db_n)
+    chain_complete = (onchain_n >= WARMUP_SUBMITS) if onchain_n is not None else db_n >= WARMUP_SUBMITS
+    return chain_complete, remaining, onchain_n, db_n
 
 
 def _warmup() -> bool:
