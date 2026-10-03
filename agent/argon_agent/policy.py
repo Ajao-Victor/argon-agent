@@ -32,9 +32,13 @@ def allowed_action(
     gate2h: int = GATE_2H_BPS,
     gate8h: int = GATE_8H_BPS,
     warmup_complete: bool = True,
+    news_paused: bool = False,
 ) -> int:
     if not warmup_complete:
         return HOLD
+    if news_paused:
+        # Mirrors ArgonVault.newsPaused: only EXIT is accepted (leave, or stay flat).
+        return EXIT
     must_exit = abs(pct1h_bps) >= gate1h or abs(pct2h_bps) >= gate2h
     if must_exit:
         return EXIT
@@ -149,10 +153,13 @@ def user_action(
     *,
     in_position: bool,
     warmup_complete: bool,
+    news_paused: bool = False,
 ) -> tuple[str, bool]:
     """Per-signer action from that wallet's bands. Returns action and whether their capital stays in."""
     if not warmup_complete:
         return "warmup", bool(in_position)
+    if news_paused:
+        return "exit", False
     breach = outside_band(pct1h_bps, gate["top_1h_bps"], gate["bottom_1h_bps"]) or outside_band(
         pct2h_bps, gate["top_2h_bps"], gate["bottom_2h_bps"]
     )

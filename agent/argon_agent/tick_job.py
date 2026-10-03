@@ -24,8 +24,25 @@ INFER_ATTEMPTS = 8
 INFER_RETRY_SECS = 12
 
 
+def _news_windows(store: Store, *, refresh: bool) -> list:
+    """Never lets a calendar problem stop the hour: falls back to the built-in official dates."""
+    from argon_agent import news
+
+    try:
+        return news.windows(store, refresh=refresh)
+    except Exception:
+        log.exception("news calendar failed; using official dates only")
+        return news.windows(None, refresh=False)
+
+
 def _apply_signer_gates(
-    store: Store, hour_id: int, pct1h_bps: int, pct2h_bps: int, pct8h_bps: int, warmup_complete: bool
+    store: Store,
+    hour_id: int,
+    pct1h_bps: int,
+    pct2h_bps: int,
+    pct8h_bps: int,
+    warmup_complete: bool,
+    news_paused: bool = False,
 ) -> None:
     rows = []
     for gate in store.list_gates():
@@ -36,6 +53,7 @@ def _apply_signer_gates(
             gate,
             in_position=bool(gate.get("in_position")),
             warmup_complete=warmup_complete,
+            news_paused=news_paused,
         )
         rows.append((action, hour_id, 1 if in_position else 0, str(gate["address"])))
         log.info("signer %s hour %s action=%s in=%s", gate["address"], hour_id, action, in_position)
@@ -89,7 +107,8 @@ def _retry_chain(store: Store, row: dict) -> dict:
         return row_to_api(row, warmup_complete=True)
     p1, p2, p8 = tb(row["eth_pct_1h"]), tb(row["eth_pct_2h"]), tb(row["eth_pct_8h"])
     live = chainmod.clients()
-    res = chainmod.execute_hour(live, hour_id, p1, p2, p8, fh(hour_id, p1, p2, p8), 0, True)
+    wins = _news_windows(store, refresh=False)
+    res = chainmod.execute_hour(live, hour_id, p1, p2, p8, fh(hour_id, p1, p2, p8), 0, True, wins)
     store.update(
         hour_id,
         tx_hash=res["submit"].get("arbitrum") or row.get("tx_hash"),
@@ -171,8 +190,25 @@ def run_hour(store: Store | None = None) -> dict:
     else:
         warmup_complete = db_count + 1 >= WARMUP_SUBMITS
 
+    from argon_agent import news
+
+    wins = _news_windows(store, refresh=True)
+    pause = news.active_window(wins, hour_id)
+    if pause is not None:
+        log.info(
+            "hour %s news pause [%s,%s) for %s",
+            hour_id,
+            pause.from_hour,
+            pause.until_hour,
+            ", ".join(e.title for e in pause.events),
+        )
     action_code = allowed_action(
-        pct1h_bps, pct2h_bps, pct8h_bps, in_pool=in_pool, warmup_complete=warmup_complete
+        pct1h_bps,
+        pct2h_bps,
+        pct8h_bps,
+        in_pool=in_pool,
+        warmup_complete=warmup_complete,
+        news_paused=pause is not None,
     )
     action = action_name(action_code, warmup_complete)
 
@@ -218,6 +254,7 @@ def run_hour(store: Store | None = None) -> dict:
         fhash,
         action_code,
         warmup_complete,
+        wins,
     )
     store.update(
         hour_id,
@@ -229,7 +266,9 @@ def run_hour(store: Store | None = None) -> dict:
         pool_status_rh=chain_result["pool_status"].get("robinhood"),
     )
     try:
-        _apply_signer_gates(store, hour_id, pct1h_bps, pct2h_bps, pct8h_bps, warmup_complete)
+        _apply_signer_gates(
+            store, hour_id, pct1h_bps, pct2h_bps, pct8h_bps, warmup_complete, news_paused=pause is not None
+        )
     except Exception:
         log.exception("signer gate update failed after keeper legs")
     row = store.get(hour_id)

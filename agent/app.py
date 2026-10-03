@@ -86,6 +86,7 @@ def root():
         "forecasts": "/forecasts?limit=24",
         "vault": "/vault",
         "pools": "/pools",
+        "news": "/news",
         "portfolio": "/portfolio/0xYourAddress",
     }
     if payload.get("lastHourId") is None:
@@ -102,6 +103,29 @@ def health():
         "ok": True,
         "modelLoaded": eight_h_loaded(),
         "database": "postgres" if store.postgres else "sqlite",
+    }
+
+
+def _news_status(hour_id: int) -> dict | None:
+    from argon_agent import news
+
+    try:
+        return news.status_payload(news.windows(store, refresh=False), hour_id)
+    except Exception:
+        log.exception("news status failed")
+        return None
+
+
+@app.get("/news")
+def news_calendar():
+    """Upcoming high-impact US releases and the keeper's pause windows (read-only, cached)."""
+    from argon_agent import news
+
+    current = current_hour_id()
+    wins = news.windows(store, refresh=False)
+    return {
+        **news.status_payload(wins, current),
+        "windows": [w.to_api() for w in wins if w.until_hour > current],
     }
 
 
@@ -131,6 +155,7 @@ def status():
         "database": "postgres" if store.postgres else "sqlite",
         "onchainForecastCount": onchain_n,
         "dbForecastCount": db_n,
+        "newsPause": _news_status(current),
     }
     if last_hour != current:
         payload["hint"] = (

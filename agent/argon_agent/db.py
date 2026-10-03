@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS signer_gates (
   last_action      TEXT,
   last_hour_id     BIGINT
 );
+CREATE TABLE IF NOT EXISTS news_events (
+  event_key   TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  at_utc      TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  fetched_at  TEXT NOT NULL
+);
 """
 
 SQLITE_SCHEMA = PG_SCHEMA.replace("TIMESTAMPTZ", "TEXT").replace("DOUBLE PRECISION", "REAL")
@@ -234,6 +241,39 @@ class Store:
         with self.conn() as c:
             cur = c.cursor()
             cur.execute(self._q(sql), tuple(row[c] for c in cols))
+
+    def save_news_events(self, events: list) -> None:
+        if not events:
+            return
+        fetched = now_iso()
+        rows = [(e.key, e.title, e.at.isoformat(), e.source, fetched) for e in events]
+        if self.postgres:
+            sql = (
+                "INSERT INTO news_events (event_key, title, at_utc, source, fetched_at) VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (event_key) DO UPDATE SET fetched_at = EXCLUDED.fetched_at"
+            )
+        else:
+            sql = "INSERT OR REPLACE INTO news_events (event_key, title, at_utc, source, fetched_at) VALUES (%s, %s, %s, %s, %s)"
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.executemany(self._q(sql), rows)
+
+    def list_news_events(self, start: datetime, end: datetime) -> list:
+        from argon_agent.news import NewsEvent
+
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT title, at_utc, source FROM news_events")
+            rows = [_as_dict(r, cur) for r in cur.fetchall()]
+        out = []
+        for r in rows:
+            try:
+                at = datetime.fromisoformat(str(r["at_utc"])).astimezone(timezone.utc)
+            except ValueError:
+                continue
+            if start <= at <= end:
+                out.append(NewsEvent(str(r["title"]), at, str(r["source"])))
+        return out
 
     def save_gate_decisions(self, rows: list[tuple]) -> None:
         if not rows:

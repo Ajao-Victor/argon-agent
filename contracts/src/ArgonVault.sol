@@ -43,6 +43,15 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     uint16 public gate8hBps = 200;
     uint64 public constant ENTER_COOLDOWN_HOURS = 2;
 
+    /// @notice Scheduled-news pause in UTC hour ids, [newsPauseFrom, newsPauseUntil).
+    /// While active, rebalance only accepts EXIT: the LP leaves (or stays out) whatever the forecast says.
+    uint64 public newsPauseFrom;
+    uint64 public newsPauseUntil;
+    /// A single window can never exceed this, so a keeper can only keep funds out of the pool briefly.
+    uint64 public constant MAX_NEWS_PAUSE_HOURS = 24;
+    /// A window may be scheduled at most this far ahead.
+    uint64 public constant MAX_NEWS_LEAD_HOURS = 48;
+
     // [FIX H-inflation] virtual shares/assets; ratio equals the original 1e10 shares per usd8 unit.
     uint256 internal constant VIRTUAL_SHARES = 1e10;
     uint256 internal constant VIRTUAL_ASSETS = 1;
@@ -73,6 +82,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     error ActionMismatch(uint8 allowed, uint8 got);
     error Cooldown();
     error AlreadyRebalanced();
+    error BadNewsPause();
     error PoolConfigured();
     error BadAdapter();
     error BadParam();
@@ -91,6 +101,7 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
     event DepositFeeSet(uint16 bps);
     event RouterSet(address indexed router);
     event EmergencyIdleOnly(address indexed user, uint256 shares);
+    event NewsPauseSet(uint64 fromHourId, uint64 untilHourId);
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
@@ -148,6 +159,28 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
         gate2hBps = g2;
         gate8hBps = g8;
         emit GatesSet(g1, g2, g8);
+    }
+
+    /// @notice Keeper schedules a pause around a high-impact release. An active pause can be
+    ///         extended but never shortened or replaced; only the owner can clear it.
+    function setNewsPause(uint64 fromHourId, uint64 untilHourId) external onlyKeeper {
+        uint64 nowHour = uint64(block.timestamp / 3600);
+        if (untilHourId <= fromHourId || untilHourId - fromHourId > MAX_NEWS_PAUSE_HOURS) revert BadNewsPause();
+        if (untilHourId <= nowHour || fromHourId > nowHour + MAX_NEWS_LEAD_HOURS) revert BadNewsPause();
+        if (newsPaused(nowHour) && (fromHourId > nowHour || untilHourId < newsPauseUntil)) revert BadNewsPause();
+        newsPauseFrom = fromHourId;
+        newsPauseUntil = untilHourId;
+        emit NewsPauseSet(fromHourId, untilHourId);
+    }
+
+    function clearNewsPause() external onlyOwner {
+        newsPauseFrom = 0;
+        newsPauseUntil = 0;
+        emit NewsPauseSet(0, 0);
+    }
+
+    function newsPaused(uint64 hourId) public view returns (bool) {
+        return hourId >= newsPauseFrom && hourId < newsPauseUntil;
     }
 
     function setDepositFeeBps(uint16 bps) external onlyOwner {
@@ -350,8 +383,9 @@ contract ArgonVault is Ownable, Pausable, ReentrancyGuard {
 
         IInferenceRegistry.Forecast memory f = registry.getForecast(hourId);
         bool inPool = p.adapter.inPosition();
-        uint8 allowed =
-            DualHorizonGate.allowedAction(f.pct1hBps, f.pct2hBps, f.pct8hBps, gate1hBps, gate2hBps, gate8hBps, inPool);
+        uint8 allowed = newsPaused(hourId)
+            ? DualHorizonGate.EXIT
+            : DualHorizonGate.allowedAction(f.pct1hBps, f.pct2hBps, f.pct8hBps, gate1hBps, gate2hBps, gate8hBps, inPool);
 
         if (action == Action.HOLD && allowed == DualHorizonGate.ENTER) {} else if (uint8(action) != allowed) {
             revert ActionMismatch(allowed, uint8(action));

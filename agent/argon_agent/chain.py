@@ -63,6 +63,27 @@ class ChainClient:
             log.warning("reading on-chain gates failed on %s; using env gates", self.cfg.name)
             return GATE_1H_BPS, GATE_2H_BPS, GATE_8H_BPS
 
+    def news_pause(self) -> tuple[int, int]:
+        return (
+            int(self.vault.functions.newsPauseFrom().call()),
+            int(self.vault.functions.newsPauseUntil().call()),
+        )
+
+    def sync_news_pause(self, hour_id: int, desired: tuple[int, int] | None) -> str | None:
+        """Push the next/active news window to the vault. Returns a tx hash, or None when nothing to do."""
+        if desired is None or DRY_RUN:
+            return None
+        cur_from, cur_until = self.news_pause()
+        if (cur_from, cur_until) == desired:
+            return None
+        want_from, want_until = desired
+        if cur_from <= hour_id < cur_until and (want_from > hour_id or want_until < cur_until):
+            # The vault never lets an active pause be shortened; keep the longer one.
+            log.info("%s keeping active news pause [%s,%s) over %s", self.cfg.name, cur_from, cur_until, desired)
+            return None
+        log.info("%s setting news pause [%s,%s)", self.cfg.name, want_from, want_until)
+        return self._send(self.vault.functions.setNewsPause(want_from, want_until))
+
     def onchain_warmup_complete(self) -> bool | None:
         try:
             return bool(self.registry.functions.warmupComplete().call())
@@ -220,14 +241,20 @@ def execute_hour(
     forecast_hash: bytes,
     action: int,
     warmup_complete: bool,
+    news_windows: list | None = None,
 ) -> dict[str, Any]:
     """`action` is kept for the API row; each chain gets its own gate decision (FIX M-any-in-pool)."""
+    from argon_agent import news
     from argon_agent.policy import allowed_action
 
+    wins = news_windows or []
+    local_paused = news.active_window(wins, hour_id) is not None
+    desired = news.desired_onchain(wins, hour_id)
     result: dict[str, Any] = {
         "submit": {},
         "rebalance": {},
         "pool_status": {},
+        "news_pause": {},
     }
     for c in live:
         try:
@@ -236,8 +263,22 @@ def execute_hour(
         except Exception as exc:
             log.exception("submit failed on %s", c.cfg.name)
             result["submit"][c.cfg.name] = f"error:{exc}"
+        pause_synced = True
+        try:
+            result["news_pause"][c.cfg.name] = c.sync_news_pause(hour_id, desired)
+        except Exception as exc:
+            pause_synced = False
+            log.exception("news pause sync failed on %s", c.cfg.name)
+            result["news_pause"][c.cfg.name] = f"error:{exc}"
         try:
             if warmup_complete:
+                chain_paused = local_paused
+                if not DRY_RUN:
+                    try:
+                        chain_paused = bool(c.vault.functions.newsPaused(hour_id).call())
+                    except Exception:
+                        log.exception("newsPaused read failed on %s", c.cfg.name)
+                        chain_paused = False
                 g1, g2, g8 = c.vault_gates()
                 chain_action = allowed_action(
                     pct1h_bps,
@@ -248,9 +289,17 @@ def execute_hour(
                     gate1h=g1,
                     gate2h=g2,
                     gate8h=g8,
+                    news_paused=chain_paused,
                 )
-                rtx = c.rebalance(hour_id, chain_action)
-                result["rebalance"][c.cfg.name] = rtx
+                if local_paused and not chain_paused and chain_action != EXIT:
+                    # The calendar says pause but the vault does not have it yet. Never ENTER here;
+                    # leave the hour unrebalanced and let the clock retry the sync.
+                    reason = "news pause not on-chain" + ("" if pause_synced else " (sync failed)")
+                    log.error("%s hour %s: %s; skipping %s", c.cfg.name, hour_id, reason, chain_action)
+                    result["rebalance"][c.cfg.name] = f"error:{reason}"
+                else:
+                    rtx = c.rebalance(hour_id, chain_action)
+                    result["rebalance"][c.cfg.name] = rtx
             else:
                 result["rebalance"][c.cfg.name] = "warmup-skip"
         except Exception as exc:

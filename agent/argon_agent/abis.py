@@ -129,6 +129,37 @@ VAULT_ABI = [
     },
     {
         "inputs": [],
+        "name": "newsPauseFrom",
+        "outputs": [{"name": "", "type": "uint64"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "newsPauseUntil",
+        "outputs": [{"name": "", "type": "uint64"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "hourId", "type": "uint64"}],
+        "name": "newsPaused",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "fromHourId", "type": "uint64"},
+            {"name": "untilHourId", "type": "uint64"},
+        ],
+        "name": "setNewsPause",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [],
         "name": "gate1hBps",
         "outputs": [{"name": "", "type": "uint16"}],
         "stateMutability": "view",

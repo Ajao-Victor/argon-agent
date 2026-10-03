@@ -174,4 +174,104 @@ contract ArgonVaultTest is Test {
         vm.expectRevert(ArgonVault.PoolNotGated.selector);
         vault.rebalance(1010, 2, ArgonVault.Action.HOLD, 0, 0, 0, 0);
     }
+
+    // ---- news pause ----
+
+    function _enterAt(uint64 hour) internal {
+        _submit(hour, -40, -110, -150);
+        vm.prank(keeper);
+        vault.rebalance(hour, 1, ArgonVault.Action.ENTER, -60, 60, 0, 0);
+    }
+
+    function testNewsPauseForcesExitWhenForecastCalm() public {
+        _warmup();
+        vm.startPrank(alice);
+        vault.deposit(address(usdc), 2_000e6);
+        vault.deposit(address(weth), 1 ether);
+        vm.stopPrank();
+        _enterAt(1010);
+        assertEq(vault.poolStatus(1), 1);
+
+        // CPI in hour 1012 -> pause [1011, 1016)
+        vm.prank(keeper);
+        vault.setNewsPause(1011, 1016);
+
+        _submit(1011, -10, -20, -30); // calm: the gate alone would say HOLD
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(ArgonVault.ActionMismatch.selector, 2, 0));
+        vault.rebalance(1011, 1, ArgonVault.Action.HOLD, 0, 10, 0, 0);
+        vm.prank(keeper);
+        vault.rebalance(1011, 1, ArgonVault.Action.EXIT, 0, 10, 0, 0);
+        assertEq(vault.poolStatus(1), 0);
+    }
+
+    function testNewsPauseBlocksEnterUntilWindowEnds() public {
+        _warmup();
+        vm.startPrank(alice);
+        vault.deposit(address(usdc), 2_000e6);
+        vault.deposit(address(weth), 1 ether);
+        vm.stopPrank();
+        vm.warp(1010 * 3600 + 60);
+        vm.prank(keeper);
+        vault.setNewsPause(1010, 1015);
+
+        for (uint64 h = 1010; h < 1015; h++) {
+            _submit(h, -40, -110, -150);
+            vm.prank(keeper);
+            vm.expectRevert(abi.encodeWithSelector(ArgonVault.ActionMismatch.selector, 2, 1));
+            vault.rebalance(h, 1, ArgonVault.Action.ENTER, -60, 60, 0, 0);
+            vm.prank(keeper);
+            vault.rebalance(h, 1, ArgonVault.Action.EXIT, 0, 10, 0, 0); // idle: stays flat
+            assertTrue(vault.newsPaused(h));
+        }
+        assertFalse(vault.newsPaused(1015));
+        _enterAt(1015);
+        assertEq(vault.poolStatus(1), 1);
+    }
+
+    function testNewsPauseOnlyKeeper() public {
+        vm.warp(1000 * 3600);
+        vm.prank(alice);
+        vm.expectRevert(ArgonVault.NotKeeper.selector);
+        vault.setNewsPause(1001, 1005);
+    }
+
+    function testNewsPauseBounds() public {
+        vm.warp(1000 * 3600);
+        vm.startPrank(keeper);
+        vm.expectRevert(ArgonVault.BadNewsPause.selector);
+        vault.setNewsPause(1005, 1005); // empty
+        vm.expectRevert(ArgonVault.BadNewsPause.selector);
+        vault.setNewsPause(1001, 1026); // 25h > cap
+        vm.expectRevert(ArgonVault.BadNewsPause.selector);
+        vault.setNewsPause(990, 1000); // already over
+        vm.expectRevert(ArgonVault.BadNewsPause.selector);
+        vault.setNewsPause(1049, 1053); // too far ahead
+        vault.setNewsPause(1048, 1053); // max lead is fine
+        vault.setNewsPause(1001, 1025); // pending window may be replaced; 24h is fine
+        vm.stopPrank();
+        assertEq(vault.newsPauseFrom(), 1001);
+        assertEq(vault.newsPauseUntil(), 1025);
+    }
+
+    function testActiveNewsPauseCannotBeShortened() public {
+        vm.warp(1000 * 3600);
+        vm.prank(keeper);
+        vault.setNewsPause(999, 1004);
+        vm.startPrank(keeper);
+        vm.expectRevert(ArgonVault.BadNewsPause.selector);
+        vault.setNewsPause(999, 1002); // shorten
+        vm.expectRevert(ArgonVault.BadNewsPause.selector);
+        vault.setNewsPause(1002, 1010); // move start into the future (would lift the pause now)
+        vault.setNewsPause(1000, 1008); // extend from now is fine
+        vm.stopPrank();
+        assertTrue(vault.newsPaused(1000));
+        assertEq(vault.newsPauseUntil(), 1008);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.clearNewsPause();
+        vault.clearNewsPause(); // owner
+        assertFalse(vault.newsPaused(1000));
+    }
 }
